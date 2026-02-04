@@ -897,7 +897,7 @@ modelItems.forEach(item=>{
 // ======= AI 逻辑 =======
 // 默认用“伪AI”方便你本地先跑通；把 USE_REAL_AI 改成 true 就会走后端转发到真正AI。
 const USE_REAL_AI = true; // ✅ 想接入真正AI：改成 true，并启动下面我给你的 server.js
-const BACKEND_URL = "http://127.0.0.1:8787/api/chat"; // 后端地址（你可以改端口）
+const BACKEND_URL = "http://172.16.240.207:8787/api/chat"; // 后端地址（你可以改端口）
 
 async function checkBackend(){
   // 如果页面元素还没准备好，懒加载获取
