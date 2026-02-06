@@ -605,13 +605,10 @@ transform: translateY(-4px);
 
   /* 输入区适配手机，贴底 */
   #inputArea{
-    position:fixed;
-    left:0;
-    right:0;
+    position:sticky;
     bottom:0;
     padding:10px;
     gap:10px;
-    z-index:80;
   }
 
   #inputArea textarea{
@@ -641,12 +638,7 @@ transform: translateY(-4px);
   #imgModal textarea{ min-height:96px; }
 
   /* 锁定整体布局：防止页面被拖动/橡皮筋 */
-  html, body{
-    overflow:hidden;
-    height:100dvh;
-    position:fixed;
-    width:100%;
-  }
+  html, body{ overflow:hidden; height:100dvh; }
   #chat{ touch-action:pan-y; }
   #overlay, #sidebar, #imgModal{ touch-action:manipulation; }
 }
@@ -1834,25 +1826,6 @@ async function checkBackend(){
       e.preventDefault();
     }
   }, {passive:false});
-})();
-// ======= Mobile: 键盘弹出时防止页面整体上移（只让键盘浮起） =======
-(function fixMobileKeyboardPush(){
-  if(!window.visualViewport) return;
-
-  const vv = window.visualViewport;
-  const inputArea = document.getElementById("inputArea");
-
-  function adjust(){
-    const offset = window.innerHeight - vv.height - vv.offsetTop;
-    if(offset > 0){
-      inputArea.style.transform = `translateY(-${offset}px)`;
-    }else{
-      inputArea.style.transform = "translateY(0)";
-    }
-  }
-
-  vv.addEventListener("resize", adjust);
-  vv.addEventListener("scroll", adjust);
 })();
 // ======= 页面初始化：每次打开都自动开始一个新聊天 =======
 // 旧聊天只在左侧历史里，不会出现在当前页面
