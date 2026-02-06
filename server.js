@@ -3,11 +3,32 @@ import cors from "cors";
 import OpenAI from "openai";
 import fetch from "node-fetch";
 import https from "https";
+import path from "path";
+import fs from "fs";
+import { fileURLToPath } from "url";
 const grokHttpsAgent = new https.Agent({ keepAlive: true });
 
 console.log("🚀 Loaded server.js at", new Date().toISOString());
 
 const app = express();
+// ===== Serve frontend (so / works on iPhone) =====
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+// Serve static files from project root (expects index.html here)
+app.use(express.static(__dirname));
+
+// Home page
+app.get("/", (req, res) => {
+  const indexPath = path.join(__dirname, "index.html");
+  const aiChatPath = path.join(__dirname, "ai-chat.html");
+
+  if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+  if (fs.existsSync(aiChatPath)) return res.sendFile(aiChatPath);
+
+  res.status(404).send("index.html not found");
+});
+// ===============================================
 app.use(cors());
 app.use(express.json({ limit: "8mb" }));
 
@@ -550,8 +571,9 @@ app.post("/api/chat", async (req, res) => {
   }
 });
 
-app.listen(8787, "0.0.0.0", () => {
-  console.log("✅ Backend running: http://127.0.0.1:8787");
+const PORT = process.env.PORT || 8787;
+
+app.listen(PORT, "0.0.0.0", () => {
+  console.log("✅ Backend running on port:", PORT);
   console.log("✅ Ping route ready: GET /api/ping");
-  console.log("✅ Full ping URL: http://172.16.240.207:8787/api/ping");
 });
