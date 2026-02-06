@@ -1253,8 +1253,10 @@ const USE_REAL_AI = true; // ✅ 想接入真正AI：改成 true，并启动下�
 // ======= 上下文：只读取当前页面聊天框里的消息（history），不读取任何其它来源 =======
 // 仍可设置一个上限来省 token（不想限制就把它设得很大）
 const MAX_CONTEXT_MESSAGES = 9999;
-const BACKEND_URL = "https://yiqun-ai-chat.onrender.com"; // 后端地址（你可以改端口）
-const IMAGE_URL = BACKEND_URL.replace(/\/api\/chat$/, "/api/image");
+const BACKEND_BASE = "https://yiqun-ai-chat.onrender.com";
+const CHAT_URL  = BACKEND_BASE + "/api/chat";
+const PING_URL  = BACKEND_BASE + "/api/ping";
+const IMAGE_URL = BACKEND_BASE + "/api/image";
 function openImgModal(){
   if(!imgModal) return;
   imgModal.classList.add("show");
@@ -1389,7 +1391,7 @@ async function checkBackend(){
   const text = document.getElementById("statusText");
   if(!dot || !text) return;
 
-  const pingUrl = BACKEND_URL.replace(/\/api\/chat$/, "/api/ping");
+  const pingUrl = PING_URL;
   console.log("[ping] GET", pingUrl);
 
   // 先显示检测中
@@ -1488,7 +1490,7 @@ async function callAI(msg, modeLocked = currentModelMode){
       stream: true
     };
 
-    const r = await fetch(BACKEND_URL, {
+    const r = await fetch(CHAT_URL, {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
