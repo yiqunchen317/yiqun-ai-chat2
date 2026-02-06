@@ -8,30 +8,67 @@
 <style>
 body{
     margin:0;
-    background:linear-gradient(135deg,#0f172a,#020617);
     color:white;
-    font-family:"Segoe UI",Arial;
+    font-family:"Segoe UI", system-ui, -apple-system, Arial;
     display:flex;
     flex-direction:column;
     height:100vh;
     overflow:hidden;
     -webkit-text-size-adjust:100%;
+
+    /* prettier background */
+    background:
+      radial-gradient(1200px 700px at 15% 10%, rgba(59,130,246,0.28), transparent 60%),
+      radial-gradient(900px 600px at 85% 20%, rgba(168,85,247,0.22), transparent 55%),
+      radial-gradient(900px 700px at 50% 95%, rgba(34,197,94,0.16), transparent 60%),
+      linear-gradient(135deg,#0b1224,#020617 55%, #020617);
+}
+/* subtle grid overlay */
+body::before{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:0;
+  background:
+    linear-gradient(to right, rgba(255,255,255,0.045) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255,255,255,0.035) 1px, transparent 1px);
+  background-size: 44px 44px;
+  mask-image: radial-gradient(800px 500px at 35% 10%, rgba(0,0,0,0.85), transparent 65%);
+  opacity:0.35;
+}
+body::after{
+  content:"";
+  position:fixed;
+  inset:0;
+  pointer-events:none;
+  z-index:0;
+  background: radial-gradient(circle at 20% 20%, rgba(255,255,255,0.06), transparent 40%),
+              radial-gradient(circle at 80% 10%, rgba(255,255,255,0.05), transparent 45%),
+              radial-gradient(circle at 60% 85%, rgba(255,255,255,0.05), transparent 45%);
+  opacity:0.35;
 }
 
+/* ensure app content sits above overlays */
+header, #layout, #inputArea, #sidebar, #overlay, #imgModal{ position:relative; z-index:1; }
+
 header{
-    padding:18px;
-    background:rgba(30,41,59,0.8);
-    backdrop-filter:blur(10px);
-    font-size:22px;
-    font-weight:bold;
-    letter-spacing:1px;
-    border-bottom:1px solid rgba(255,255,255,0.08);
+    padding:16px 16px;
+    background:rgba(15,23,42,0.62);
+    backdrop-filter:blur(14px);
+    -webkit-backdrop-filter:blur(14px);
+    font-size:20px;
+    font-weight:800;
+    letter-spacing:0.6px;
+    border-bottom:1px solid rgba(255,255,255,0.09);
+    box-shadow: 0 10px 28px rgba(0,0,0,0.22);
 }
 
 header{
     display:flex;
     align-items:center;
     gap:12px;
+    border-radius: 0 0 16px 16px;
 }
 
 .title{
@@ -53,33 +90,35 @@ header{
     display:inline-flex;
     align-items:center;
     justify-content:center;
-    background:rgba(2,6,23,0.35);
+    background:rgba(2,6,23,0.28);
     color:white;
-    border:1px solid rgba(255,255,255,0.10);
-    border-radius:10px;
+    border:1px solid rgba(255,255,255,0.12);
+    border-radius:12px;
     cursor:pointer;
-    transition:0.2s;
+    transition:transform .18s ease, box-shadow .18s ease, background .18s ease;
 }
 
 .iconBtn:hover{
-    transform:translateY(-1px);
-    box-shadow:0 6px 18px rgba(0,0,0,0.25);
+    transform:translateY(-1px) scale(1.02);
+    background:rgba(2,6,23,0.42);
+    box-shadow:0 10px 26px rgba(0,0,0,0.28);
 }
 
 .chipBtn{
     padding:10px 14px;
-    background:rgba(2,6,23,0.35);
-    border:1px solid rgba(255,255,255,0.10);
+    background:rgba(2,6,23,0.28);
+    border:1px solid rgba(255,255,255,0.12);
     color:white;
     border-radius:999px;
     cursor:pointer;
-    font-weight:600;
-    transition:0.2s;
+    font-weight:700;
+    transition:transform .18s ease, box-shadow .18s ease, background .18s ease;
 }
 
 .chipBtn:hover{
     transform:translateY(-1px);
-    box-shadow:0 6px 18px rgba(0,0,0,0.25);
+    background:rgba(2,6,23,0.42);
+    box-shadow:0 10px 26px rgba(0,0,0,0.28);
 }
 
 .chipBtn.danger{
@@ -128,6 +167,7 @@ header{
     z-index:30;
     display:flex;
     flex-direction:column;
+    box-shadow: 20px 0 60px rgba(0,0,0,0.45);
 }
 
 #sidebar.open{
@@ -161,6 +201,7 @@ header{
     padding:12px;
     border-radius:12px;
     background:rgba(2,6,23,0.35);
+    backdrop-filter: blur(10px);
     border:1px solid rgba(255,255,255,0.08);
     cursor:pointer;
     transition:0.2s;
@@ -229,53 +270,72 @@ header{
     padding:20px;
     display:flex;
     flex-direction:column;
-    gap:10px;
+    gap:12px;
     overscroll-behavior:contain;
     -webkit-overflow-scrolling:touch;
+
+    scrollbar-gutter: stable;
 }
+/* scrollbar */
+#chat::-webkit-scrollbar{ width:10px; }
+#chat::-webkit-scrollbar-thumb{
+  background: rgba(148,163,184,0.28);
+  border: 2px solid rgba(2,6,23,0.65);
+  border-radius: 999px;
+}
+#chat::-webkit-scrollbar-thumb:hover{ background: rgba(148,163,184,0.40); }
 
 .message{
     max-width:65%;
     padding:12px 16px;
-    border-radius:14px;
+    border-radius:16px;
     font-size:15px;
-    line-height:1.4;
+    line-height:1.45;
     animation:fadeIn .25s ease;
-    box-shadow:0 4px 15px rgba(0,0,0,0.25);
+    box-shadow:0 10px 30px rgba(0,0,0,0.22);
+    border:1px solid rgba(255,255,255,0.08);
 }
 
 .user{
-    background:linear-gradient(135deg,#3b82f6,#2563eb);
+    background: linear-gradient(135deg, rgba(59,130,246,0.95), rgba(37,99,235,0.92));
     margin-left:auto;
 }
 
 .ai{
-    background:rgba(51,65,85,0.85);
-    backdrop-filter:blur(8px);
+    background: rgba(30,41,59,0.62);
+    backdrop-filter: blur(10px);
+    -webkit-backdrop-filter: blur(10px);
 }
 
 #inputArea{
     display:flex;
-    padding:15px;
-    background:rgba(30,41,59,0.85);
-    backdrop-filter:blur(10px);
-    border-top:1px solid rgba(255,255,255,0.08);
+    padding:14px 14px;
+    background:rgba(15,23,42,0.65);
+    backdrop-filter:blur(14px);
+    -webkit-backdrop-filter:blur(14px);
+    border-top:1px solid rgba(255,255,255,0.10);
     gap:12px;
+    box-shadow: 0 -10px 26px rgba(0,0,0,0.20);
 }
 
 input{
     flex:1;
     padding:12px 14px;
     font-size:16px;
-    border:none;
-    border-radius:8px;
+    border:1px solid rgba(255,255,255,0.10);
+    border-radius:12px;
     outline:none;
-    background:#020617;
+    background:rgba(2,6,23,0.62);
     color:white;
+    box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
 }
 
 input::placeholder{
     color:#64748b;
+}
+input:focus, #inputArea textarea:focus{
+  border-color: rgba(59,130,246,0.55);
+  box-shadow: 0 0 0 4px rgba(59,130,246,0.18);
 }
 
 button{
@@ -283,15 +343,16 @@ button{
     background:linear-gradient(135deg,#3b82f6,#2563eb);
     color:white;
     border:none;
-    border-radius:8px;
+    border-radius:12px;
     cursor:pointer;
-    font-weight:bold;
-    transition:0.2s;
+    font-weight:800;
+    transition:transform .18s ease, box-shadow .18s ease, filter .18s ease;
 }
 
 button:hover{
     transform:translateY(-1px);
-    box-shadow:0 6px 18px rgba(59,130,246,0.4);
+    filter:saturate(1.06);
+    box-shadow:0 12px 28px rgba(59,130,246,0.28);
 }
 
 @keyframes fadeIn{
@@ -390,17 +451,33 @@ button:hover{
 .msgTime{ font-size:11px; color:#cbd5e1; opacity:0.75; white-space:nowrap; }
 
 .copyBtn{
-  font-size:11px; padding:6px 8px; border-radius:10px;
-  border:1px solid rgba(255,255,255,0.10);
-  background:rgba(2,6,23,0.25); color:white; cursor:pointer; transition:0.2s;
+  font-size:11px;
+  padding:6px 10px;
+  border-radius:999px;
+  border:1px solid rgba(255,255,255,0.12);
+  background:rgba(2,6,23,0.24);
+  color:white;
+  cursor:pointer;
+  transition:transform .18s ease, background .18s ease, box-shadow .18s ease;
 }
-.copyBtn:hover{ transform:translateY(-1px); }
+.copyBtn:hover{
+  transform:translateY(-1px);
+  background:rgba(2,6,23,0.40);
+  box-shadow:0 10px 24px rgba(0,0,0,0.25);
+}
 
 #inputArea textarea{
-  flex:1; resize:none;
-  padding:12px 14px; font-size:16px;
-  border:none; border-radius:8px; outline:none;
-  background:#020617; color:white; line-height:1.35;
+  flex:1;
+  resize:none;
+  padding:12px 14px;
+  font-size:16px;
+  border:1px solid rgba(255,255,255,0.10);
+  border-radius:14px;
+  outline:none;
+  background:rgba(2,6,23,0.62);
+  color:white;
+  line-height:1.35;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,0.02);
 }
 /* ===== 图片生成弹窗 ===== */
 #imgModal{
@@ -419,12 +496,13 @@ button:hover{
   backdrop-filter:blur(14px);
   box-shadow:0 22px 60px rgba(0,0,0,0.45);
   padding:16px;
+  overflow:hidden;
 }
 #imgModal .panel h3{ margin:0 0 10px; font-size:16px; }
 #imgModal textarea{
   width:100%; min-height:110px; resize:vertical;
   padding:12px 14px;
-  border-radius:12px;
+  border-radius:14px;
   border:1px solid rgba(255,255,255,0.10);
   background:rgba(2,6,23,0.55);
   color:white; outline:none;
