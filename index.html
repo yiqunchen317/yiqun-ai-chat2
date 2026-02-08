@@ -2,7 +2,7 @@
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover"/>
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
 <title>益群的电子奴隶</title>
 
 <style>
@@ -12,7 +12,7 @@ body{
     font-family:"Segoe UI", system-ui, -apple-system, Arial;
     display:flex;
     flex-direction:column;
-    min-height:100vh;
+    height:100vh;
     overflow:hidden;
     -webkit-text-size-adjust:100%;
 
@@ -49,11 +49,6 @@ body::after{
   opacity:0.35;
 }
 
-  :root{
-    --kbd: 0px;          /* keyboard offset (visualViewport) */
-    --vvh: 100vh;        /* visualViewport height */
-    --vvo: 0px;          /* visualViewport offsetTop */
-  }
 /* ensure app content sits above overlays */
 header, #inputArea{ position:relative; z-index:1; }
 /* NOTE: do NOT set z-index on #layout/#sidebar/#overlay here, or sidebar clicks will fall through */
@@ -579,7 +574,7 @@ transform: translateY(-4px);
 
 /* ======= Mobile responsive (<= 640px) ======= */
 @media (max-width: 640px){
-  body{ min-height:100vh; }
+  body{ height:100dvh; }
 
   header{
     padding:12px;
@@ -605,23 +600,17 @@ transform: translateY(-4px);
   .statusText{ font-size:11px; }
 
   /* 消息气泡更宽 */
-  #chat{
-    padding:14px;
-    padding-bottom:calc(90px + var(--kbd));
-  }
+  #chat{ padding:14px; }
   .message{ max-width:88%; font-size:15px; }
 
   /* 输入区适配手机，贴底 */
   #inputArea{
-    position:fixed;
-    left:0;
-    right:0;
-    bottom: env(safe-area-inset-bottom);
+    position:sticky;
+    bottom:0;
     padding:10px;
     gap:10px;
-    transform: translateY(calc(-1 * var(--kbd)));
-    z-index:80;
   }
+
   #inputArea textarea{
     font-size:16px;
     padding:10px 12px;
@@ -649,14 +638,7 @@ transform: translateY(-4px);
   #imgModal textarea{ min-height:96px; }
 
   /* 锁定整体布局：防止页面被拖动/橡皮筋 */
-  html, body{
-    overflow:hidden;       /* 继续锁住页面，不让乱滑 */
-    height:auto;           /* ✅ 不锁死高度 */
-    width:100%;
-    overflow-x:hidden;     /* 禁止横向 */
-    overscroll-behavior:none; /* 禁止橡皮筋 */
-    touch-action:pan-y;    /* 允许竖向手势（主要给内部滚动用） */
-  }
+  html, body{ overflow:hidden; height:100dvh; }
   #chat{ touch-action:pan-y; }
   #overlay, #sidebar, #imgModal{ touch-action:manipulation; }
 }
@@ -1828,37 +1810,6 @@ async function checkBackend(){
   }
 }
 
-(function bindVisualViewportKeyboard(){
-  // ======= iOS/Android 键盘高度动态适配（类似 ChatGPT 的做法） =======
-  const vv = window.visualViewport;
-  if(!vv) return;
-
-  function update(){
-    // iOS 上：键盘弹起时 vv.height 变小；有时还会带 offsetTop
-    const kbd = Math.max(0, window.innerHeight - vv.height - vv.offsetTop);
-    document.documentElement.style.setProperty('--kbd', kbd + 'px');
-    document.documentElement.style.setProperty('--vvh', vv.height + 'px');
-    document.documentElement.style.setProperty('--vvo', vv.offsetTop + 'px');
-  }
-
-  update();
-  vv.addEventListener('resize', update);
-  vv.addEventListener('scroll', update);
-  window.addEventListener('orientationchange', ()=> setTimeout(update, 250));
-
-  // 输入框聚焦时，确保最新的键盘高度生效，并尽量把聊天滚到最底
-  try{
-    const inputEl = document.getElementById('input');
-    if(inputEl){
-      inputEl.addEventListener('focus', ()=>{
-        setTimeout(()=>{ update(); try{ chat.scrollTop = chat.scrollHeight; }catch(e){} }, 60);
-      });
-      inputEl.addEventListener('blur', ()=>{
-        setTimeout(()=>{ update(); }, 60);
-      });
-    }
-  }catch(e){}
-})();
 // ======= Mobile: 防止缩放/双击放大（iOS/安卓浏览器） =======
 (function lockMobileViewport(){
   const isMobile = window.matchMedia && window.matchMedia('(max-width: 640px)').matches;
