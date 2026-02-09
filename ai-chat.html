@@ -1286,9 +1286,8 @@ if(/^\/(img|图)\s+/i.test(text)){
       const r = await fetch(IMAGE_URL, {
         method: "POST",
         headers: {
-          "Content-Type":"application/json",
-          "X-API-Key": "YQ_Secure_Chat_2026_9dK28LmPq47Fh2"
-        },
+  "Content-Type":"application/json"
+},
         body: JSON.stringify({
           prompt,
           mode: modeAtSend,
@@ -1716,10 +1715,9 @@ async function generateImageFromModal(){
     const modeLocked = currentModelMode;
     const r = await fetch(IMAGE_URL, {
       method: "POST",
-      headers: {
-        "Content-Type":"application/json",
-        "X-API-Key": "YQ_Secure_Chat_2026_9dK28LmPq47Fh2"
-      },
+headers: {
+  "Content-Type":"application/json"
+},
       body: JSON.stringify({
         prompt: p,
         mode: modeLocked,
@@ -1775,7 +1773,6 @@ async function regenerateImageForMessage(messageId){
     method: "POST",
     headers: {
       "Content-Type":"application/json",
-      "X-API-Key": "YQ_Secure_Chat_2026_9dK28LmPq47Fh2"
     },
     body: JSON.stringify({
       prompt,
@@ -1954,9 +1951,8 @@ async function callAI(msg, modeLocked = currentModelMode){
     const r = await fetch(CHAT_URL, {
         method: "POST",
         headers: {
-            "Content-Type": "application/json",
-            "X-API-Key": "YQ_Secure_Chat_2026_9dK28LmPq47Fh2"
-        },
+  "Content-Type": "application/json"
+},
         body: JSON.stringify(payload),
         signal: currentAbortController.signal
     });

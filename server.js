@@ -1,5 +1,4 @@
 import express from "express";
-import cors from "cors";
 import OpenAI from "openai";
 import fetch from "node-fetch";
 import https from "https";
@@ -32,20 +31,33 @@ app.get("/", (req, res) => {
   res.status(404).send("index.html not found");
 });
 // ===============================================
-// ===== SECURITY: CORS allowlist =====
-const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "").split(",").map(s=>s.trim()).filter(Boolean);
+// ===== SECURITY: Strict CORS allowlist (NO localhost / NO Origin:null) =====
+// Allow ONLY the public GitHub Pages origin and this Render service origin.
+// Do NOT allow file:// (Origin: null) or localhost.
+const ALLOWED_ORIGINS = new Set([
+  "https://yiqnuchen317.github.io",
+  "https://yiqun-ai-chat.onrender.com"
+]);
 
-app.use(cors({
-  origin: function(origin, cb){
-    if(!origin) return cb(null, true);
-    if(ALLOWED_ORIGINS.length === 0) return cb(null, true);
-    if(ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
-    return cb(new Error("CORS blocked: " + origin));
-  },
-  methods: ["GET","POST","OPTIONS"],
-  allowedHeaders: ["Content-Type","Authorization","X-API-Key"],
-  credentials: false
-}));
+app.use((req, res, next) => {
+  const origin = req.headers.origin;
+
+  // Only set CORS headers for explicitly allowed browser origins.
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Vary", "Origin");
+    res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+  }
+
+  // Preflight: only allow if origin is allowlisted; otherwise hard block
+  if (req.method === "OPTIONS") {
+    if (origin && ALLOWED_ORIGINS.has(origin)) return res.status(204).end();
+    return res.status(403).end();
+  }
+
+  next();
+});
 
 app.use(express.json({ limit: "8mb" }));
 
@@ -72,11 +84,19 @@ function getClientKey(req){
   return "";
 }
 
-function requireApiKey(req,res,next){
-  if(!API_KEY) return next();
+function requireApiKey(req, res, next) {
+  const origin = req.headers.origin;
+
+  // Allowed browser origins do NOT need a key (frontend must not ship secrets)
+  if (origin && ALLOWED_ORIGINS.has(origin)) return next();
+
+  // For any non-allowlisted origin (including no Origin), require server secret
+  if (!API_KEY) {
+    return res.status(401).json({ error: "Unauthorized" });
+  }
 
   const k = getClientKey(req);
-  if(k && k === API_KEY) return next();
+  if (k && k === API_KEY) return next();
 
   return res.status(401).json({ error: "Unauthorized" });
 }
