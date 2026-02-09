@@ -11,6 +11,9 @@ const grokHttpsAgent = new https.Agent({ keepAlive: true });
 console.log("🚀 Loaded server.js at", new Date().toISOString());
 
 const app = express();
+
+// ===== SECURITY: trust proxy so IP works on Render =====
+app.set("trust proxy", 1);
 // ===== Serve frontend (so / works on iPhone) =====
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -29,8 +32,88 @@ app.get("/", (req, res) => {
   res.status(404).send("index.html not found");
 });
 // ===============================================
-app.use(cors());
+// ===== SECURITY: CORS allowlist =====
+const ALLOWED_ORIGINS = String(process.env.ALLOWED_ORIGINS || "").split(",").map(s=>s.trim()).filter(Boolean);
+
+app.use(cors({
+  origin: function(origin, cb){
+    if(!origin) return cb(null, true);
+    if(ALLOWED_ORIGINS.length === 0) return cb(null, true);
+    if(ALLOWED_ORIGINS.includes(origin)) return cb(null, true);
+    return cb(new Error("CORS blocked: " + origin));
+  },
+  methods: ["GET","POST","OPTIONS"],
+  allowedHeaders: ["Content-Type","Authorization","X-API-Key"],
+  credentials: false
+}));
+
 app.use(express.json({ limit: "8mb" }));
+
+// ===== SECURITY HEADERS =====
+app.use((req,res,next)=>{
+  res.setHeader("X-Content-Type-Options","nosniff");
+  res.setHeader("Referrer-Policy","no-referrer");
+  res.setHeader("X-Frame-Options","DENY");
+  next();
+});
+
+// ===== API KEY AUTH =====
+const API_KEY = String(process.env.API_KEY || "").trim();
+
+function getClientKey(req){
+  const h = req.headers["x-api-key"];
+  if(typeof h === "string" && h.trim()) return h.trim();
+
+  const auth = req.headers["authorization"];
+  if(typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")){
+    return auth.slice(7).trim();
+  }
+
+  return "";
+}
+
+function requireApiKey(req,res,next){
+  if(!API_KEY) return next();
+
+  const k = getClientKey(req);
+  if(k && k === API_KEY) return next();
+
+  return res.status(401).json({ error: "Unauthorized" });
+}
+
+// ===== RATE LIMIT =====
+const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 60000);
+const RATE_CHAT_MAX = Number(process.env.RATE_CHAT_MAX || 30);
+const RATE_IMG_MAX  = Number(process.env.RATE_IMG_MAX  || 10);
+
+const _rate = new Map();
+
+function rateLimit(type,max){
+  return (req,res,next)=>{
+    const ip = (req.headers["x-forwarded-for"]
+      ? String(req.headers["x-forwarded-for"]).split(",")[0].trim()
+      : req.ip) || "unknown";
+
+    const now = Date.now();
+    const key = type + ":" + ip;
+
+    const cur = _rate.get(key) || { ts: now, n: 0 };
+
+    if(now - cur.ts >= RATE_WINDOW_MS){
+      cur.ts = now;
+      cur.n = 0;
+    }
+
+    cur.n++;
+    _rate.set(key, cur);
+
+    if(cur.n > max){
+      return res.status(429).json({ error: "Rate limit exceeded" });
+    }
+
+    next();
+  };
+}
 
 // 读取环境变量：OPENAI_API_KEY
 let _openai = null;
@@ -394,7 +477,7 @@ app.get("/api/ping", (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 // ======= image generation =======
-app.post("/api/image", async (req, res) => {
+app.post("/api/image", requireApiKey, rateLimit("img", RATE_IMG_MAX), async (req, res) => {
   try{
     const { prompt, mode, model } = req.body || {};
 
@@ -435,7 +518,7 @@ app.post("/api/image", async (req, res) => {
   }
 });
 
-app.post("/api/chat", async (req, res) => {
+app.post("/api/chat", requireApiKey, rateLimit("chat", RATE_CHAT_MAX), async (req, res) => {
   try {
     const { history, mode, model, stream } = req.body || {};
     const wantStream = !!(stream === true || stream === 1 || stream === "1" || String(stream || "").toLowerCase() === "true");
