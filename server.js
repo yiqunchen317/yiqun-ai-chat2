@@ -37,7 +37,7 @@ app.get("/", (req, res) => {
 // Allow ONLY the public GitHub Pages origin and this Render service origin.
 // Do NOT allow file:// (Origin: null) or localhost.
 const ALLOWED_ORIGINS = new Set([
-  "https://yiqnuchen317.github.io",
+  "https://yiqunchen317.github.io",
   "https://yiqun-ai-chat.onrender.com"
 ]);
 
@@ -172,10 +172,14 @@ app.post("/api/auth", (req, res) => {
   const sid = newSid();
   SESSIONS.set(sid, { createdAt: Date.now() });
 
+  const https = isHttps(req);
+
   res.cookie("sid", sid, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: isHttps(req),
+    // For cross-site requests (GitHub Pages -> Render), HTTPS must use SameSite=None + Secure.
+    // For local HTTP dev, keep SameSite=Lax so cookies still work.
+    sameSite: https ? "none" : "lax",
+    secure: https,
     maxAge: 1000 * 60 * 60 * 24 * 30 // 30 days
   });
 
