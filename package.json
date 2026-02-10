@@ -3,9 +3,26 @@
   "version": "1.0.0",
   "type": "module",
   "dependencies": {
-    "express": "^4.19.2",
     "cors": "^2.8.5",
-    "openai": "^4.0.0",
-    "node-fetch": "^3.3.2"
-  }
+    "express": "^4.22.1",
+    "node-fetch": "^3.3.2",
+    "openai": "^4.104.0"
+  },
+  "description": "",
+  "main": "server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/yiqunchen317/yiqun-ai-chat.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/yiqunchen317/yiqun-ai-chat/issues"
+  },
+  "homepage": "https://github.com/yiqunchen317/yiqun-ai-chat#readme"
 }
