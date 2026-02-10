@@ -5,6 +5,8 @@ import https from "https";
 import path from "path";
 import fs from "fs";
 import { fileURLToPath } from "url";
+import cookieParser from "cookie-parser";
+import crypto from "crypto";
 const grokHttpsAgent = new https.Agent({ keepAlive: true });
 
 console.log("🚀 Loaded server.js at", new Date().toISOString());
@@ -48,6 +50,7 @@ app.use((req, res, next) => {
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
     res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key");
+    res.setHeader("Access-Control-Allow-Credentials", "true");
   }
 
   // Preflight: only allow if origin is allowlisted; otherwise hard block
@@ -61,6 +64,7 @@ app.use((req, res, next) => {
 
 
 app.use(express.json({ limit: "512kb" }));
+app.use(cookieParser());
 
 // ======= AI 身份设定（System Prompt）=======
 function buildSystemIdentity(){
@@ -136,6 +140,56 @@ app.use((req,res,next)=>{
   res.setHeader("X-Frame-Options","DENY");
   next();
 });
+// ===== INVITE-CODE ACTIVATION (user enters once; server issues httpOnly cookie session) =====
+const INVITE_CODE = String(process.env.INVITE_CODE || "").trim();
+
+// In-memory sessions (simple, fast). For production scaling, replace with Redis.
+const SESSIONS = new Map(); // sid -> { createdAt }
+
+function newSid(){
+  return crypto.randomBytes(16).toString("hex");
+}
+
+function isHttps(req){
+  // Render/Proxies: X-Forwarded-Proto is reliable when trust proxy is enabled.
+  const xf = String(req.headers["x-forwarded-proto"] || "").toLowerCase();
+  if(xf) return xf.includes("https");
+  return !!req.secure;
+}
+
+// POST /api/auth  { code }
+// If code matches INVITE_CODE, set sid cookie (httpOnly) and mark session activated.
+app.post("/api/auth", (req, res) => {
+  const code = String((req.body && req.body.code) || "").trim();
+
+  if(!INVITE_CODE){
+    return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
+  }
+  if(!code || code !== INVITE_CODE){
+    return res.status(401).json({ error: "BAD_CODE" });
+  }
+
+  const sid = newSid();
+  SESSIONS.set(sid, { createdAt: Date.now() });
+
+  res.cookie("sid", sid, {
+    httpOnly: true,
+    sameSite: "lax",
+    secure: isHttps(req),
+    maxAge: 1000 * 60 * 60 * 24 * 30 // 30 days
+  });
+
+  return res.json({ ok: true });
+});
+
+function requireActivated(req, res, next){
+  const sid = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
+  if(sid && SESSIONS.has(sid)){
+    req.sid = sid;
+    return next();
+  }
+  return res.status(401).json({ error: "NOT_ACTIVATED" });
+}
 
 // ===== API KEY AUTH =====
 const API_KEY = String(process.env.API_KEY || "").trim();
@@ -153,7 +207,7 @@ function getClientKey(req){
 }
 
 function requireApiKey(req, res, next) {
-  // SECURITY: Do NOT trust Origin as auth. Always require API key.
+  // Admin-only gate (legacy). Prefer invite/session for normal users.
   if (!API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -162,6 +216,24 @@ function requireApiKey(req, res, next) {
   if (k && k === API_KEY) return next();
 
   return res.status(401).json({ error: "Unauthorized" });
+}
+
+// Normal users: must be activated via invite code (sid cookie).
+// Admins: can still pass API_KEY (front-end only asks for it when ?admin=1).
+function requireActivatedOrApiKey(req, res, next){
+  const sid = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
+  if(sid && SESSIONS.has(sid)){
+    req.sid = sid;
+    return next();
+  }
+
+  // fallback: admin key
+  if(API_KEY){
+    const k = getClientKey(req);
+    if(k && k === API_KEY) return next();
+  }
+
+  return res.status(401).json({ error: "NOT_ACTIVATED" });
 }
 
 // ===== RATE LIMIT =====
@@ -570,7 +642,7 @@ app.get("/api/ping", (req, res) => {
   res.json({ ok: true, ts: Date.now() });
 });
 // ======= image generation =======
-app.post("/api/image", requireApiKey, rateLimit("img", RATE_IMG_MAX), async (req, res) => {
+app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX), async (req, res) => {
   try{
     const { prompt, mode, model } = req.body || {};
     const p = String(prompt || "").trim();
@@ -614,7 +686,7 @@ app.post("/api/image", requireApiKey, rateLimit("img", RATE_IMG_MAX), async (req
   }
 });
 
-app.post("/api/chat", requireApiKey, rateLimit("chat", RATE_CHAT_MAX), async (req, res) => {
+app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX), async (req, res) => {
   try {
     const { history, mode, model, stream } = req.body || {};
     // SECURITY: strict input limits to prevent cost abuse
