@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
 <meta name="referrer" content="no-referrer" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data:; connect-src 'self' https: http://localhost:8787 http://127.0.0.1:8787; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; img-src 'self' data: https:; connect-src 'self' https:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';" />
 <title>益群的电子奴隶</title>
 
 <style>
@@ -722,24 +722,7 @@ transform: translateY(-4px);
 const SESSIONS_KEY = "chatSessions";
 
 // ======= 隐私模式：仅本页面内存，不落盘（sessionStorage 仅用于记住当前标签页状态） =======
-const IS_LOCALHOST = (location.hostname === "localhost" || location.hostname === "127.0.0.1");
-
-// ======= 防 iframe 嵌套（meta 里的 frame-ancestors 在多数浏览器会被忽略） =======
-try{
-  if(window.top !== window.self){
-    window.top.location = window.self.location;
-  }
-}catch(e){ /* ignore */ }
-
-// ======= 线上默认关闭调试日志 =======
-const DEBUG = IS_LOCALHOST;
-
-// ======= 隐私模式：默认对外(线上)开启，避免把聊天历史落到 localStorage =======
 let privacyMode = (sessionStorage.getItem("privacyMode") === "1");
-if(sessionStorage.getItem("privacyMode") === null && !IS_LOCALHOST){
-  privacyMode = true;
-  sessionStorage.setItem("privacyMode", "1");
-}
 
 function loadSessions(){
     if(privacyMode) return [];
@@ -1153,43 +1136,35 @@ if(m && m.role === "ai" && canContinue && continueTarget && continueTarget.msgId
   top.appendChild(cont);
 }
     // AI 图片消息：增加“重生成”按钮
-    if(m && m.role === "ai" && m.image && typeof m.image === "string"){
-      const regen = document.createElement("button");
-      regen.className = "copyBtn";
-      regen.type = "button";
-      regen.textContent = "重生成";
+if(m && m.role === "ai" && m.image && typeof m.image === "string"){
+  const regen = document.createElement("button");
+  regen.className = "copyBtn";
+  regen.type = "button";
+  regen.textContent = "重生成";
 
-      regen.addEventListener("click", async (e)=>{
-        e.stopPropagation();
-        if(DEBUG) console.log("[regen] clicked", { id: m.id, hasImage: !!m.image, text: (m.text||"").slice(0,80) });
-        try{
-          await regenerateImageForMessage(m.id);
-        }catch(err){
-          if(DEBUG) console.log("[regen] error", err);
-          alert("重生成失败：" + (err && err.message ? err.message : String(err)));
-        }
-      });
-
-      top.appendChild(regen);
+  regen.addEventListener("click", async (e)=>{
+    e.stopPropagation();
+    console.log("[regen] clicked", { id: m.id, hasImage: !!m.image, text: (m.text||"").slice(0,80) });
+    try{
+      await regenerateImageForMessage(m.id);
+    }catch(err){
+      console.log("[regen] error", err);
+      alert("重生成失败：" + (err && err.message ? err.message : String(err)));
     }
+  });
+
+  top.appendChild(regen);
+}
 
     const content = document.createElement("div");
 
 // 图片消息优先渲染
 if(m && m.image && typeof m.image === "string"){
-  const src = String(m.image || "").trim();
-  if(!/^data:image\//i.test(src)){
-    const warn = document.createElement("div");
-    warn.className = "imgCaption";
-    warn.textContent = "（已拦截外链图片：仅允许 data:image/…）";
-    content.appendChild(warn);
-  }else{
-    const img = document.createElement("img");
-    img.className = "msgImg";
-    img.src = src;
-    img.alt = "generated";
-    content.appendChild(img);
-  }
+  const img = document.createElement("img");
+  img.className = "msgImg";
+  img.src = m.image;
+  img.alt = "generated";
+  content.appendChild(img);
 
   const cap = String(m.text || "").trim();
   if(cap){
@@ -1308,8 +1283,9 @@ if(/^\/(img|图)\s+/i.test(text)){
     const placeholder = history[history.length - 1];
 
     try{
-      const r = await apiFetch(IMAGE_URL, {
+      const r = await fetch(IMAGE_URL, {
         method: "POST",
+        credentials: "include",
         headers: authHeaders(),
         body: JSON.stringify({
           prompt,
@@ -1643,68 +1619,13 @@ const DEV_FAKE = (location.hostname === "localhost" || location.hostname === "12
 // ======= 上下文：只读取当前页面聊天框里的消息（history），不读取任何其它来源 =======
 // 仍可设置一个上限来省 token（不想限制就把它设得很大）
 const MAX_CONTEXT_MESSAGES = 9999;
-// ======= API endpoints (auto route: local dev vs GitHub Pages vs Render) =======
-// Priority:
-// 1) window.__BACKEND_BASE__ (manual override)
-// 2) ?backend=https://... (query override)
-// 3) Auto:
-//    - If page is served by Render backend domain -> same-origin ("" => relative)
-//    - If page is on localhost but NOT port 8787 -> use http://localhost:8787
-//    - If page is on GitHub Pages -> use Render backend
-const DEFAULT_RENDER_BACKEND = "https://yiqun-ai-chat.onrender.com";
-
-function normalizeBase(u){
-  const s = String(u || "").trim();
-  if(!s) return "";
-  return s.endsWith("/") ? s.slice(0, -1) : s;
-}
-
-function computeBackendBase(){
-  // Query override (安全：只允许本机调试用，线上禁止被链接劫持到假后端)
-  try{
-    const q = new URLSearchParams(location.search).get("backend");
-    if(q && IS_LOCALHOST) return normalizeBase(q);
-  }catch(e){}
-
-  const host = String(location.hostname || "").toLowerCase();
-  const port = String(location.port || "");
-
-  // If served by Render backend itself, keep same-origin
-  if(host.endsWith("onrender.com")) return "";
-
-  // Local dev: if you're serving the HTML from another port (e.g., Live Server), still call backend 8787
-  if(host === "localhost" || host === "127.0.0.1"){
-    if(port === "8787") return "";
-    return "http://localhost:8787";
-  }
-
-  // GitHub Pages should call Render backend
-  if(host.endsWith("github.io")) return DEFAULT_RENDER_BACKEND;
-
-  // Default: same-origin
-  return "";
-}
-
-const BACKEND_BASE = normalizeBase(
-  (window.__BACKEND_BASE__ && String(window.__BACKEND_BASE__).trim())
-) || computeBackendBase();
-
+// ======= API endpoints (prefer same-origin to reduce exposure of infrastructure details) =======
+// If this page is served behind your own domain (recommended), keep these as relative paths.
+// If you must call a full backend URL during dev, set window.__BACKEND_BASE__ before this script.
+const BACKEND_BASE = (window.__BACKEND_BASE__ && String(window.__BACKEND_BASE__).trim()) || "";
 const CHAT_URL  = BACKEND_BASE + "/api/chat";
 const PING_URL  = BACKEND_BASE + "/api/ping";
 const IMAGE_URL = BACKEND_BASE + "/api/image";
-// Always include cookies (sid) for ALL backend calls.
-function apiFetch(url, options){
-  const opt = options ? { ...options } : {};
-  opt.credentials = "include";
-  return fetch(url, opt);
-}
-
-let __activationTried = false;
-
-if(DEBUG){
-  console.log("[backend] BASE=", BACKEND_BASE || "(same-origin)");
-  console.log("[backend] CHAT_URL=", CHAT_URL);
-}
 
 function openImgModal(){
   if(!imgModal) return;
@@ -1724,8 +1645,6 @@ function getApiKey(){
 }
 
 function isAdminGateEnabled(){
-  // 安全：管理员密钥输入只允许在本机调试（localhost）开启
-  if(!IS_LOCALHOST) return false;
   try{
     return new URLSearchParams(location.search).get("admin") === "1";
   }catch(e){
@@ -1754,11 +1673,12 @@ async function ensureActivatedOnce(){
   const code = String(prompt("请输入邀请码（仅首次激活一次）：") || "").trim();
   if(!code) throw new Error("未输入邀请码");
 
-  const r = await apiFetch(BACKEND_BASE + "/api/auth", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ code })
-});
+  const r = await fetch(BACKEND_BASE + "/api/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+    credentials: "include"
+  });
 
   if(!r.ok){
     const t = await r.text().catch(()=> "");
@@ -1785,8 +1705,9 @@ async function generateImageFromModal(){
 
   try{
     const modeLocked = currentModelMode;
-    const r = await apiFetch(IMAGE_URL, {
+    const r = await fetch(IMAGE_URL, {
       method: "POST",
+      credentials: "include",
       headers: authHeaders(),
       body: JSON.stringify({
         prompt: p,
@@ -1815,10 +1736,10 @@ async function generateImageFromModal(){
   }
 }
 async function regenerateImageForMessage(messageId){
-  if(DEBUG) console.log("[regen] start", { messageId, IMAGE_URL });
+  console.log("[regen] start", { messageId, IMAGE_URL });
   const idx = history.findIndex(m => m && m.id === messageId);
   if(idx < 0){
-    if(DEBUG) console.log("[regen] not found", messageId);
+    console.log("[regen] not found", messageId);
     return;
   }
 
@@ -1838,9 +1759,10 @@ async function regenerateImageForMessage(messageId){
   render();
 
   // 复用你现有的图片请求（你现在 /img 功能里就在用）
-  if(DEBUG) console.log("[regen] request", { prompt: prompt.slice(0,120), modeLocked });
-  const r = await apiFetch(IMAGE_URL, {
+  console.log("[regen] request", { prompt: prompt.slice(0,120), modeLocked });
+  const r = await fetch(IMAGE_URL, {
     method: "POST",
+    credentials: "include",
     headers: authHeaders(),
     body: JSON.stringify({
       prompt,
@@ -1858,7 +1780,7 @@ async function regenerateImageForMessage(messageId){
   }
 
   const data = await r.json().catch(()=> ({}));
-  if(DEBUG) console.log("[regen] response", data);
+  console.log("[regen] response", data);
   const img = (data && typeof data.image === "string") ? data.image.trim() : "";
   if(!img){
     m.text = "图片生成失败：后端没有返回 image 字段";
@@ -1897,7 +1819,7 @@ async function checkBackend(){
   if(!dot || !text) return;
 
   const pingUrl = PING_URL;
-  if(DEBUG) console.log("[ping] GET", pingUrl);
+  console.log("[ping] GET", pingUrl);
 
   // 先显示检测中
   text.textContent = "检测中…";
@@ -1907,7 +1829,7 @@ async function checkBackend(){
   const timer = setTimeout(()=> ctrl.abort(), 1800);
 
   try{
-    const r = await apiFetch(pingUrl, { method: "GET", signal: ctrl.signal });
+    const r = await fetch(pingUrl, { method: "GET", signal: ctrl.signal, credentials: "include" });
     clearTimeout(timer);
 
     if(r.ok){
@@ -1958,16 +1880,14 @@ async function callAI(msg, modeLocked = currentModelMode){
 
   // IMPORTANT: Do NOT put system prompts / red-line rules / model vendor info in the front-end.
   // Front-end only sends the conversation window and the selected "mode".
-  if(DEBUG) console.log("[callAI] mode=", modeLocked);
+  console.log("[callAI] mode=", modeLocked);
 
-  if(DEBUG){
-    try{
-      const ctx = buildContextWindow();
-      const lastUser = [...ctx].reverse().find(m => m && m.role === "user");
-      console.log("[callAI] ctx_len=", ctx.length, "last_user=", lastUser ? lastUser.text : "(none)");
-    }catch(e){
-      console.log("[callAI] ctx_debug_error", e);
-    }
+  try{
+    const ctx = buildContextWindow();
+    const lastUser = [...ctx].reverse().find(m => m && m.role === "user");
+    console.log("[callAI] ctx_len=", ctx.length, "last_user=", lastUser ? lastUser.text : "(none)");
+  }catch(e){
+    console.log("[callAI] ctx_debug_error", e);
   }
 
   const payloadHistory = buildContextWindow();
@@ -1990,30 +1910,37 @@ async function callAI(msg, modeLocked = currentModelMode){
 
   currentAbortController = new AbortController();
 
-  const r = await apiFetch(CHAT_URL, {
+  const r = await fetch(CHAT_URL, {
   method: "POST",
+  credentials: "include",
   headers: authHeaders(),
   body: JSON.stringify(payload),
   signal: currentAbortController.signal
 });
 
   if(!r.ok){
+    // 401: 未来会用于“未激活/未登录”。现在先做兼容：
+    // - 如果后端已提供 /api/auth 且返回 NOT_ACTIVATED，则引导用户输入邀请码激活一次。
+    // - 如果后端仍要求 X-API-Key（旧逻辑），普通用户不会被要求输入；你可以用 ?admin=1 进入管理员门禁。
     if(r.status === 401){
-      // Auto-attempt activation ONCE for any 401 (some servers don't return JSON).
-      if(!__activationTried){
-        __activationTried = true;
+      let j = null;
+      try{ j = await r.clone().json(); }catch(e){ j = null; }
+
+      const errCode = j && (j.error || j.code) ? String(j.error || j.code) : "";
+
+      // 只有明确 NOT_ACTIVATED 才走邀请码激活
+      if(errCode === "NOT_ACTIVATED"){
         try{
           await ensureActivatedOnce();
+          // 激活成功后自动重试一次
           return await callAI(msg, modeLocked);
         }catch(e){
-          // continue to readable error
+          throw new Error("未激活：" + (e && e.message ? e.message : String(e)));
         }
       }
 
-      let j = null;
-      try{ j = await r.clone().json(); }catch(e){ j = null; }
-      const errCode = j && (j.error || j.code) ? String(j.error || j.code) : "";
-      throw new Error(errCode ? ("未授权（401）：" + errCode) : "未授权（401）。请先输入邀请码激活，然后再试。");
+      // 其它 401：给出可理解提示（不让普通用户输入密钥）
+      throw new Error("未授权（401）。如果你是管理员，请用 ?admin=1 打开页面后输入门禁；否则需要后端启用邀请码/登录。");
     }
 
     const t = await r.text().catch(()=>" ");
