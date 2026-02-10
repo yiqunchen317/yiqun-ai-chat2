@@ -47,7 +47,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key");
   }
 
   // Preflight: only allow if origin is allowlisted; otherwise hard block
@@ -59,7 +59,7 @@ app.use((req, res, next) => {
   next();
 });
 
-app.use(express.json({ limit: "8mb" }));
+app.use(express.json({ limit: "512kb" }));
 
 // ===== SECURITY HEADERS =====
 app.use((req,res,next)=>{
@@ -85,12 +85,7 @@ function getClientKey(req){
 }
 
 function requireApiKey(req, res, next) {
-  const origin = req.headers.origin;
-
-  // Allowed browser origins do NOT need a key (frontend must not ship secrets)
-  if (origin && ALLOWED_ORIGINS.has(origin)) return next();
-
-  // For any non-allowlisted origin (including no Origin), require server secret
+  // SECURITY: Do NOT trust Origin as auth. Always require API key.
   if (!API_KEY) {
     return res.status(401).json({ error: "Unauthorized" });
   }
@@ -107,6 +102,15 @@ const RATE_CHAT_MAX = Number(process.env.RATE_CHAT_MAX || 30);
 const RATE_IMG_MAX  = Number(process.env.RATE_IMG_MAX  || 10);
 
 const _rate = new Map();
+// prevent unbounded memory growth
+const RATE_MAX_KEYS = Number(process.env.RATE_MAX_KEYS || 5000);
+function pruneRateMap(now){
+  if(_rate.size <= RATE_MAX_KEYS) return;
+  for (const [k,v] of _rate) {
+    if(!v || (now - v.ts) > (RATE_WINDOW_MS * 3)) _rate.delete(k);
+    if(_rate.size <= RATE_MAX_KEYS) break;
+  }
+}
 
 function rateLimit(type,max){
   return (req,res,next)=>{
@@ -115,6 +119,7 @@ function rateLimit(type,max){
       : req.ip) || "unknown";
 
     const now = Date.now();
+    pruneRateMap(now);
     const key = type + ":" + ip;
 
     const cur = _rate.get(key) || { ts: now, n: 0 };
@@ -500,6 +505,9 @@ app.get("/api/ping", (req, res) => {
 app.post("/api/image", requireApiKey, rateLimit("img", RATE_IMG_MAX), async (req, res) => {
   try{
     const { prompt, mode, model } = req.body || {};
+    const p = String(prompt || "").trim();
+    if(!p) return res.status(400).json({ error: "prompt required" });
+    if(p.length > 1000) return res.status(400).json({ error: "prompt too long" });
 
     const useGrok = (
       mode === "infinity" ||
@@ -519,7 +527,7 @@ app.post("/api/image", requireApiKey, rateLimit("img", RATE_IMG_MAX), async (req
           }
         }
 
-        const img = await callGrokImage(prompt, grokModel);
+        const img = await callGrokImage(p, grokModel);
         return res.json({ image: img, provider: "grok" });
       }catch(grokErr){
         console.log("⚠️ Grok 图片失败，fallback OpenAI:", grokErr?.message);
@@ -528,7 +536,7 @@ app.post("/api/image", requireApiKey, rateLimit("img", RATE_IMG_MAX), async (req
 
     // ⭐ fallback OpenAI
     const imgModel = "gpt-image-1";
-    const dataUrl = await callOpenAIImage(prompt, imgModel);
+    const dataUrl = await callOpenAIImage(p, imgModel);
 
     return res.json({ image: dataUrl, provider: "openai" });
 
@@ -541,19 +549,27 @@ app.post("/api/image", requireApiKey, rateLimit("img", RATE_IMG_MAX), async (req
 app.post("/api/chat", requireApiKey, rateLimit("chat", RATE_CHAT_MAX), async (req, res) => {
   try {
     const { history, mode, model, stream } = req.body || {};
+    // SECURITY: strict input limits to prevent cost abuse
+    if(!Array.isArray(history)) return res.status(400).json({ error: "history must be an array" });
+    if(history.length < 1) return res.status(400).json({ error: "history is empty" });
+    if(history.length > 60) return res.status(400).json({ error: "history too long" });
     const wantStream = !!(stream === true || stream === 1 || stream === "1" || String(stream || "").toLowerCase() === "true");
 
     // 把历史整理成 messages（简单做法）
     // 用最简单安全的格式（避免 content block 类型错误）
     const input = [];
 
-    if (Array.isArray(history)) {
-      for (const m of history) {
-        if (!m || !m.role || !m.text) continue;
-        const role = (m.role === "system") ? "system" : (m.role === "user" ? "user" : "assistant");
-        input.push({ role, content: String(m.text) });
-      }
+    for (const m of history) {
+      if (!m || !m.role || typeof m.text !== "string") continue;
+      const text = m.text.trim();
+      if(!text) continue;
+      if(text.length > 4000) continue;
+      const role = (m.role === "system") ? "system" : (m.role === "user" ? "user" : "assistant");
+      input.push({ role, content: text });
     }
+
+    const totalChars = input.reduce((sum, x) => sum + String(x.content || "").length, 0);
+    if(totalChars > 20000) return res.status(400).json({ error: "history too large" });
 
     // ✅ 后端严格：只用 history，不再额外追加 message（否则容易重复/空消息）
     // 去掉末尾连续重复的 user（内容完全相同）

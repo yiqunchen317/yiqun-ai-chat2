@@ -1285,9 +1285,7 @@ if(/^\/(img|图)\s+/i.test(text)){
     try{
       const r = await fetch(IMAGE_URL, {
         method: "POST",
-        headers: {
-  "Content-Type":"application/json"
-},
+        headers: authHeaders(),
         body: JSON.stringify({
           prompt,
           mode: modeAtSend,
@@ -1690,6 +1688,28 @@ const BACKEND_BASE = "https://yiqun-ai-chat.onrender.com";
 const CHAT_URL  = BACKEND_BASE + "/api/chat";
 const PING_URL  = BACKEND_BASE + "/api/ping";
 const IMAGE_URL = BACKEND_BASE + "/api/image";
+// ======= API KEY (do NOT hardcode secrets in front-end) =======
+// User enters an access key once per browser session; stored in sessionStorage.
+const API_KEY_STORAGE = "yiqun_api_key";
+
+function getApiKey(){
+  return String(sessionStorage.getItem(API_KEY_STORAGE) || "").trim();
+}
+
+function ensureApiKey(){
+  let k = getApiKey();
+  if(k) return k;
+  k = String(prompt("请输入访问密钥（API_KEY）：") || "").trim();
+  if(k) sessionStorage.setItem(API_KEY_STORAGE, k);
+  return k;
+}
+
+function authHeaders(){
+  const k = ensureApiKey();
+  const h = { "Content-Type": "application/json" };
+  if(k) h["X-API-Key"] = k;
+  return h;
+}
 function openImgModal(){
   if(!imgModal) return;
   imgModal.classList.add("show");
@@ -1715,9 +1735,7 @@ async function generateImageFromModal(){
     const modeLocked = currentModelMode;
     const r = await fetch(IMAGE_URL, {
       method: "POST",
-headers: {
-  "Content-Type":"application/json"
-},
+      headers: authHeaders(),
       body: JSON.stringify({
         prompt: p,
         mode: modeLocked,
@@ -1771,9 +1789,7 @@ async function regenerateImageForMessage(messageId){
   console.log("[regen] request", { prompt: prompt.slice(0,120), modeLocked });
   const r = await fetch(IMAGE_URL, {
     method: "POST",
-    headers: {
-      "Content-Type":"application/json",
-    },
+    headers: authHeaders(),
     body: JSON.stringify({
       prompt,
       mode: modeLocked,
@@ -1950,9 +1966,7 @@ async function callAI(msg, modeLocked = currentModelMode){
 
     const r = await fetch(CHAT_URL, {
         method: "POST",
-        headers: {
-  "Content-Type": "application/json"
-},
+        headers: authHeaders(),
         body: JSON.stringify(payload),
         signal: currentAbortController.signal
     });
