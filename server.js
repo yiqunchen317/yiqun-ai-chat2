@@ -143,11 +143,46 @@ app.use((req,res,next)=>{
 // ===== INVITE-CODE ACTIVATION (user enters once; server issues httpOnly cookie session) =====
 const INVITE_CODE = String(process.env.INVITE_CODE || "").trim();
 
-// In-memory sessions (simple, fast). For production scaling, replace with Redis.
-const SESSIONS = new Map(); // sid -> { createdAt }
+// ===== Signed stateless sessions (survive restarts) =====
+// IMPORTANT: set SESSION_SECRET on Render for stable validation across deploys.
+// If not set, we fall back to API_KEY or INVITE_CODE (better than nothing).
+const SESSION_SECRET = String(process.env.SESSION_SECRET || process.env.API_KEY || INVITE_CODE || "").trim();
+
+function signRawSid(raw){
+  if(!SESSION_SECRET) return "";
+  return crypto.createHmac("sha256", SESSION_SECRET).update(String(raw)).digest("hex").slice(0, 32);
+}
 
 function newSid(){
-  return crypto.randomBytes(16).toString("hex");
+  const raw = crypto.randomBytes(16).toString("hex");
+  const sig = signRawSid(raw);
+  // If SESSION_SECRET is missing, we still return raw (will fail verification).
+  return sig ? `${raw}.${sig}` : raw;
+}
+
+function verifySid(sidCookie){
+  const v = String(sidCookie || "").trim();
+  if(!v) return "";
+  if(!SESSION_SECRET) return "";
+
+  const parts = v.split(".");
+  if(parts.length !== 2) return "";
+  const raw = parts[0];
+  const sig = parts[1];
+  if(!raw || !sig) return "";
+
+  const expected = signRawSid(raw);
+  try{
+    // constant-time compare
+    const a = Buffer.from(sig);
+    const b = Buffer.from(expected);
+    if(a.length !== b.length) return "";
+    if(!crypto.timingSafeEqual(a, b)) return "";
+  }catch(_e){
+    return "";
+  }
+
+  return raw;
 }
 
 function isHttps(req){
@@ -169,13 +204,17 @@ app.post("/api/auth", (req, res) => {
     return res.status(401).json({ error: "BAD_CODE" });
   }
 
+  if(!SESSION_SECRET){
+    return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
+  }
+
   const sid = newSid();
-  SESSIONS.set(sid, { createdAt: Date.now() });
 
   res.cookie("sid", sid, {
     httpOnly: true,
-    sameSite: "lax",
-    secure: isHttps(req),
+    // allow GitHub Pages -> Render cross-site requests
+    sameSite: "none",
+    secure: true,
     maxAge: 1000 * 60 * 60 * 24 * 30 // 30 days
   });
 
@@ -183,9 +222,10 @@ app.post("/api/auth", (req, res) => {
 });
 
 function requireActivated(req, res, next){
-  const sid = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
-  if(sid && SESSIONS.has(sid)){
-    req.sid = sid;
+  const sidCookie = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
+  const raw = verifySid(sidCookie);
+  if(raw){
+    req.sid = raw;
     return next();
   }
   return res.status(401).json({ error: "NOT_ACTIVATED" });
@@ -221,9 +261,10 @@ function requireApiKey(req, res, next) {
 // Normal users: must be activated via invite code (sid cookie).
 // Admins: can still pass API_KEY (front-end only asks for it when ?admin=1).
 function requireActivatedOrApiKey(req, res, next){
-  const sid = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
-  if(sid && SESSIONS.has(sid)){
-    req.sid = sid;
+  const sidCookie = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
+  const raw = verifySid(sidCookie);
+  if(raw){
+    req.sid = raw;
     return next();
   }
 
