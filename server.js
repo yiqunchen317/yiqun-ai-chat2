@@ -763,8 +763,8 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       return res.json({ reply });
     }
 
-    // ✅ 其他模式走 GPT（OpenAI Responses API）
-    const gptModel = (typeof model === "string" && model.trim()) ? model : "gpt-5.2";
+    // If client explicitly passes `model`, respect it; otherwise pick by mode.
+    const gptModel = (typeof model === "string" && model.trim()) ? model.trim() : pickGptModelByMode(mode);
 
     if(wantStream){
       res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
@@ -808,7 +808,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         res.write(`data: ${JSON.stringify({ delta: full })}\n\n`);
       }
 
-      console.log("⏱ GPT responses ms =", Date.now() - gptT0, "model=", gptModel, "input_len=", Array.isArray(messages) ? messages.length : 0);
+      console.log("⏱ GPT responses ms =", Date.now() - gptT0, "mode=", mode, "model=", gptModel, "input_len=", Array.isArray(messages) ? messages.length : 0);
       res.write(`event: done\ndata: {}\n\n`);
       return res.end();
     }
@@ -818,7 +818,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       model: gptModel,
       input: messages
     });
-    console.log("⏱ GPT responses ms =", Date.now() - gptT0, "model=", gptModel, "input_len=", Array.isArray(messages) ? messages.length : 0);
+    console.log("⏱ GPT responses ms =", Date.now() - gptT0, "mode=", mode, "model=", gptModel, "input_len=", Array.isArray(messages) ? messages.length : 0);
 
     res.json({ reply: resp.output_text || "" });
   } catch (e) {
@@ -847,3 +847,24 @@ app.listen(PORT, "0.0.0.0", () => {
   console.log("✅ Backend running on port:", PORT);
   console.log("✅ Ping route ready: GET /api/ping");
 });
+
+// ======= GPT Model Picker by Mode =======
+function pickGptModelByMode(mode){
+  const strong = String(process.env.GPT_STRONG_MODEL || "gpt-5.2").trim() || "gpt-5.2";
+  const sleep  = String(process.env.GPT_SLEEP_MODEL  || "gpt-4.1-mini").trim() || strong;
+  const weak   = String(process.env.GPT_WEAK_MODEL   || "gpt-4.1-nano").trim() || sleep;
+
+  const m = String(mode || "").trim().toLowerCase();
+
+  // 益群大模型 / 强 / strong
+  if(m === "strong" || m === "yiqun-strong" || m === "yiqun" || m === "big" || m.includes("大模型")) return strong;
+
+  // 益群睡觉模式 / 中 / normal / sleep
+  if(m === "sleep" || m === "yiqun-sleep" || m === "normal" || m.includes("睡觉")) return sleep;
+
+  // 弱智模式 / 弱 / cheap / weak
+  if(m === "weak" || m === "yiqun-weak" || m === "cheap" || m.includes("弱智")) return weak;
+
+  // Default: strongest
+  return strong;
+}
