@@ -1285,6 +1285,7 @@ if(/^\/(img|图)\s+/i.test(text)){
     try{
       const r = await fetch(IMAGE_URL, {
         method: "POST",
+        credentials: "include",
         headers: authHeaders(),
         body: JSON.stringify({
           prompt,
@@ -1625,32 +1626,66 @@ const BACKEND_BASE = (window.__BACKEND_BASE__ && String(window.__BACKEND_BASE__)
 const CHAT_URL  = BACKEND_BASE + "/api/chat";
 const PING_URL  = BACKEND_BASE + "/api/ping";
 const IMAGE_URL = BACKEND_BASE + "/api/image";
-// ======= API KEY (do NOT hardcode secrets in front-end) =======
-// User enters an access key once per browser session; stored in sessionStorage.
+
+function openImgModal(){
+  if(!imgModal) return;
+  imgModal.classList.add("show");
+  setTimeout(()=>{ try{ imgPrompt && imgPrompt.focus(); }catch(e){} }, 60);
+}
+// ======= 认证（前端不再向普通用户索要“密钥”） =======
+// 说明：
+// - OpenAI/Grok 等“服务密钥”永远只在后端。
+// - 这里保留一个“管理员调试门禁”的兼容入口：只有 URL 带 ?admin=1 才会询问 API_KEY。
+//   等你后端改成“邀请码/会话 cookie”后，这个 admin 门禁可以再删掉。
+
 const API_KEY_STORAGE = "yiqun_api_key";
 
 function getApiKey(){
   return String(sessionStorage.getItem(API_KEY_STORAGE) || "").trim();
 }
 
-function ensureApiKey(){
+function isAdminGateEnabled(){
+  try{
+    return new URLSearchParams(location.search).get("admin") === "1";
+  }catch(e){
+    return false;
+  }
+}
+
+function ensureAdminApiKeyIfNeeded(){
+  if(!isAdminGateEnabled()) return "";
   let k = getApiKey();
   if(k) return k;
-  k = String(prompt("请输入访问密钥（API_KEY）：") || "").trim();
+  k = String(prompt("管理员模式：请输入访问密钥（API_KEY）：") || "").trim();
   if(k) sessionStorage.setItem(API_KEY_STORAGE, k);
   return k;
 }
 
 function authHeaders(){
-  const k = ensureApiKey();
   const h = { "Content-Type": "application/json" };
+  const k = ensureAdminApiKeyIfNeeded();
   if(k) h["X-API-Key"] = k;
   return h;
 }
-function openImgModal(){
-  if(!imgModal) return;
-  imgModal.classList.add("show");
-  setTimeout(()=>{ try{ imgPrompt && imgPrompt.focus(); }catch(e){} }, 60);
+
+// ======= 邀请码激活（后端稍后会加 /api/auth；现在先把前端准备好） =======
+async function ensureActivatedOnce(){
+  const code = String(prompt("请输入邀请码（仅首次激活一次）：") || "").trim();
+  if(!code) throw new Error("未输入邀请码");
+
+  const r = await fetch(BACKEND_BASE + "/api/auth", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ code }),
+    credentials: "include"
+  });
+
+  if(!r.ok){
+    const t = await r.text().catch(()=> "");
+    throw new Error("邀请码验证失败：" + r.status + " " + t);
+  }
+
+  return true;
 }
 
 function closeImgModal(){
@@ -1672,6 +1707,7 @@ async function generateImageFromModal(){
     const modeLocked = currentModelMode;
     const r = await fetch(IMAGE_URL, {
       method: "POST",
+      credentials: "include",
       headers: authHeaders(),
       body: JSON.stringify({
         prompt: p,
@@ -1726,6 +1762,7 @@ async function regenerateImageForMessage(messageId){
   console.log("[regen] request", { prompt: prompt.slice(0,120), modeLocked });
   const r = await fetch(IMAGE_URL, {
     method: "POST",
+    credentials: "include",
     headers: authHeaders(),
     body: JSON.stringify({
       prompt,
@@ -1792,7 +1829,7 @@ async function checkBackend(){
   const timer = setTimeout(()=> ctrl.abort(), 1800);
 
   try{
-    const r = await fetch(pingUrl, { method: "GET", signal: ctrl.signal });
+    const r = await fetch(pingUrl, { method: "GET", signal: ctrl.signal, credentials: "include" });
     clearTimeout(timer);
 
     if(r.ok){
@@ -1874,14 +1911,39 @@ async function callAI(msg, modeLocked = currentModelMode){
   currentAbortController = new AbortController();
 
   const r = await fetch(CHAT_URL, {
-    method: "POST",
-    headers: authHeaders(),
-    body: JSON.stringify(payload),
-    signal: currentAbortController.signal
-  });
+  method: "POST",
+  credentials: "include",
+  headers: authHeaders(),
+  body: JSON.stringify(payload),
+  signal: currentAbortController.signal
+});
 
   if(!r.ok){
-    const t = await r.text().catch(()=>"");
+    // 401: 未来会用于“未激活/未登录”。现在先做兼容：
+    // - 如果后端已提供 /api/auth 且返回 NOT_ACTIVATED，则引导用户输入邀请码激活一次。
+    // - 如果后端仍要求 X-API-Key（旧逻辑），普通用户不会被要求输入；你可以用 ?admin=1 进入管理员门禁。
+    if(r.status === 401){
+      let j = null;
+      try{ j = await r.clone().json(); }catch(e){ j = null; }
+
+      const errCode = j && (j.error || j.code) ? String(j.error || j.code) : "";
+
+      // 只有明确 NOT_ACTIVATED 才走邀请码激活
+      if(errCode === "NOT_ACTIVATED"){
+        try{
+          await ensureActivatedOnce();
+          // 激活成功后自动重试一次
+          return await callAI(msg, modeLocked);
+        }catch(e){
+          throw new Error("未激活：" + (e && e.message ? e.message : String(e)));
+        }
+      }
+
+      // 其它 401：给出可理解提示（不让普通用户输入密钥）
+      throw new Error("未授权（401）。如果你是管理员，请用 ?admin=1 打开页面后输入门禁；否则需要后端启用邀请码/登录。");
+    }
+
+    const t = await r.text().catch(()=>" ");
     throw new Error("后端错误：" + r.status + " " + t);
   }
 
