@@ -14,7 +14,7 @@ console.log("🚀 Loaded server.js at", new Date().toISOString());
 
 const app = express();
 
-// ===== Supabase Client =====
+// ===== Supabase Client (required on Render) =====
 const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
@@ -56,7 +56,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Tianqing-Key");
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
 
@@ -241,7 +241,36 @@ app.use((req,res,next)=>{
   next();
 });
 // ===== INVITE-CODE ACTIVATION (user enters once; server issues httpOnly cookie session) =====
+
 const INVITE_CODE = String(process.env.INVITE_CODE || "").trim();
+
+// ===== 天晴小宝贝：后端解锁密钥（必须二次校验） =====
+// 在 Render 环境变量里设置：TIANQING_UNLOCK_KEY
+// 可支持多个密钥：用英文逗号分隔，例如：abc123,def456
+const TIANQING_UNLOCK_KEY_RAW = String(process.env.TIANQING_UNLOCK_KEY || "").trim();
+const TIANQING_UNLOCK_KEYS = new Set(
+  TIANQING_UNLOCK_KEY_RAW
+    .split(",")
+    .map(s => String(s || "").trim())
+    .filter(Boolean)
+);
+
+function getTianqingKeyFromReq(req){
+  // 首选 header，其次 body
+  const h = req.headers["x-tianqing-key"];
+  if(typeof h === "string" && h.trim()) return h.trim();
+  const b = req.body && req.body.tianqing_key;
+  if(typeof b === "string" && b.trim()) return b.trim();
+  return "";
+}
+
+function verifyTianqingKey(req){
+  // 未配置密钥：直接视为未解锁（更安全）
+  if(!TIANQING_UNLOCK_KEYS.size) return false;
+  const k = getTianqingKeyFromReq(req);
+  if(!k) return false;
+  return TIANQING_UNLOCK_KEYS.has(k);
+}
 
 // ===== Signed stateless sessions (survive restarts) =====
 // IMPORTANT: set SESSION_SECRET on Render for stable validation across deploys.
@@ -788,7 +817,7 @@ app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX),
   try{
     const ip = getClientIp(req);
     const sid = shortSid(req);
-    const { prompt, mode, model } = req.body || {};
+    const { prompt, mode, model, tianqing_key } = req.body || {};
     const p = String(prompt || "").trim();
     if(!p) return res.status(400).json({ error: "prompt required" });
     if(p.length > 1000) return res.status(400).json({ error: "prompt too long" });
@@ -840,19 +869,29 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
   try {
     const ip = getClientIp(req);
     const sid = shortSid(req);
-    const { history, mode, model, stream } = req.body || {};
+    const { history, mode, model, stream, tianqing_key } = req.body || {};
     // Safe request logging (no keys/cookies/headers)
     logEvent(req, "chat_request", {
       mode: safeStr(mode),
       model: safeStr(model),
       stream: !!(stream === true || stream === 1 || stream === "1" || String(stream || "").toLowerCase() === "true"),
-      history_len: Array.isArray(history) ? history.length : -1
+      history_len: Array.isArray(history) ? history.length : -1,
+      has_tianqing_key: !!getTianqingKeyFromReq(req)
     });
     // SECURITY: strict input limits to prevent cost abuse
     if(!Array.isArray(history)) return res.status(400).json({ error: "history must be an array" });
     if(history.length < 1) return res.status(400).json({ error: "history is empty" });
     if(history.length > 60) return res.status(400).json({ error: "history too long" });
     const wantStream = !!(stream === true || stream === 1 || stream === "1" || String(stream || "").toLowerCase() === "true");
+
+    // ===== 后端强制：天晴模式必须携带正确解锁密钥 =====
+    if(String(mode || "").trim() === "tianqing"){
+      const ok = verifyTianqingKey(req);
+      if(!ok){
+        logEvent(req, "tianqing_denied", { reason: "bad_or_missing_key" });
+        return res.status(403).json({ error: "TIANQING_LOCKED" });
+      }
+    }
 
     // 把历史整理成 messages（简单做法）
     // 用最简单安全的格式（避免 content block 类型错误）
@@ -898,7 +937,8 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         user_text: lastUser.content,
         mode: mode || "default",
         ip: ip,
-        sid: sid || null
+        sid: sid || null,
+        tianqing_unlocked: (String(mode || "").trim() === "tianqing") ? verifyTianqingKey(req) : null
       });
     } catch (dbErr) {
       console.log("[SUPABASE_ERROR]", dbErr?.message || dbErr);
