@@ -7,11 +7,18 @@ import fs from "fs";
 import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
+import { createClient } from '@supabase/supabase-js';
 const grokHttpsAgent = new https.Agent({ keepAlive: true });
 
 console.log("🚀 Loaded server.js at", new Date().toISOString());
 
 const app = express();
+
+// ===== Supabase Client =====
+const supabase = createClient(
+  process.env.SUPABASE_URL,
+  process.env.SUPABASE_SERVICE_ROLE_KEY
+);
 
 // ===== SECURITY: trust proxy so IP works on Render =====
 app.set("trust proxy", 1);
@@ -884,6 +891,18 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     const lastUser = [...input].reverse().find(m => m && m.role === "user" && String(m.content || "").trim());
     if (!lastUser) throw new Error("history 里没有有效的 user 消息");
     logEvent(req, "chat_user", { text: clipText(lastUser.content) });
+
+    // ===== Save chat to Supabase =====
+    try {
+      await supabase.from("chat_logs").insert({
+        user_text: lastUser.content,
+        mode: mode || "default",
+        ip: ip,
+        sid: sid || null
+      });
+    } catch (dbErr) {
+      console.log("[SUPABASE_ERROR]", dbErr?.message || dbErr);
+    }
 
     // ✅ Backend injects system prompt and rule-probe guard (kept out of front-end)
     const sysPrompt = getSystemPromptForMode(mode);
