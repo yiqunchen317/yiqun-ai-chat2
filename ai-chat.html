@@ -1599,18 +1599,44 @@ clearBtn.addEventListener("click", ()=>{
 // ======= 模型选择逻辑 =======
 let currentModelMode = "cheap";
 // ======= 天晴小宝贝：前端解锁开关（后端之后会二次校验） =======
-const TIANQING_KEY_STORAGE = "tianqing_unlock_key";
+// 目标：只输入一次密钥即可长期生效；除非点🔓清除
+const TIANQING_KEY_STORAGE_V2 = "tianqing_unlock_key_v2"; // persistent (localStorage)
+const TIANQING_KEY_STORAGE_V1 = "tianqing_unlock_key";    // legacy (sessionStorage)
+
+function getTianqingKey(){
+  try{
+    const v2 = String(localStorage.getItem(TIANQING_KEY_STORAGE_V2) || "").trim();
+    if(v2) return v2;
+
+    // 兼容旧版本：如果 sessionStorage 里有，就迁移到 localStorage
+    const v1 = String(sessionStorage.getItem(TIANQING_KEY_STORAGE_V1) || "").trim();
+    if(v1){
+      localStorage.setItem(TIANQING_KEY_STORAGE_V2, v1);
+      sessionStorage.removeItem(TIANQING_KEY_STORAGE_V1);
+      return v1;
+    }
+    return "";
+  }catch(_e){
+    return "";
+  }
+}
 
 function hasTianqingKey(){
-  return !!String(sessionStorage.getItem(TIANQING_KEY_STORAGE) || "").trim();
+  return !!getTianqingKey();
 }
 
 function setTianqingKey(k){
   const v = String(k || "").trim();
-  if(v){
-    sessionStorage.setItem(TIANQING_KEY_STORAGE, v);
-  }else{
-    sessionStorage.removeItem(TIANQING_KEY_STORAGE);
+  try{
+    if(v){
+      localStorage.setItem(TIANQING_KEY_STORAGE_V2, v);
+    }else{
+      localStorage.removeItem(TIANQING_KEY_STORAGE_V2);
+    }
+    // 清理旧版本残留
+    sessionStorage.removeItem(TIANQING_KEY_STORAGE_V1);
+  }catch(_e){
+    // ignore
   }
   updateTianqingVisibility();
 }
@@ -1690,8 +1716,7 @@ if(unlockBtn){
         return;
       }
     }
-
-    const k = String(prompt("输入密钥：解锁天晴小宝贝模式（只在本标签页生效）") || "").trim();
+    const k = String(prompt("输入密钥：解锁天晴小宝贝模式（记住一次，直到你点🔓清除）") || "").trim();
     if(!k){
       // 不输入：不解锁
       setTianqingKey("");
@@ -2054,9 +2079,7 @@ async function callAI(msg, modeLocked = currentModelMode){
     };
   });
 
-  const tKey = (modeLocked === "tianqing")
-    ? String(sessionStorage.getItem("tianqing_unlock_key") || "").trim()
-    : "";
+  const tKey = (modeLocked === "tianqing") ? getTianqingKey() : "";
 
   const payload = {
     history: normalizedHistory,
