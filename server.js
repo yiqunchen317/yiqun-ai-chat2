@@ -66,6 +66,52 @@ app.use((req, res, next) => {
 app.use(express.json({ limit: "512kb" }));
 app.use(cookieParser());
 
+// ======= SERVER LOGGING (safe, opt-in) =======
+// Enable by setting LOG_CHAT=1 on Render / in your terminal.
+const LOG_CHAT = String(process.env.LOG_CHAT || "").trim() === "1";
+const LOG_MAX_CHARS = Number(process.env.LOG_MAX_CHARS || 400);
+
+function safeStr(x){
+  return String(x ?? "");
+}
+
+function getClientIp(req){
+  const xf = req.headers["x-forwarded-for"];
+  if(typeof xf === "string" && xf.trim()) return xf.split(",")[0].trim();
+  return req.ip || "unknown";
+}
+
+function shortSid(req){
+  try{
+    const sidCookie = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
+    const raw = verifySid(sidCookie);
+    return raw ? raw.slice(0, 8) : "";
+  }catch(_e){
+    return "";
+  }
+}
+
+function clipText(text){
+  const s = safeStr(text).replace(/\s+/g, " ").trim();
+  if(!s) return "";
+  return s.length > LOG_MAX_CHARS ? (s.slice(0, LOG_MAX_CHARS) + "…") : s;
+}
+
+function logEvent(req, tag, obj){
+  if(!LOG_CHAT) return;
+  const base = {
+    ts: new Date().toISOString(),
+    tag,
+    ip: getClientIp(req),
+    sid: shortSid(req)
+  };
+  try{
+    console.log("[LOG]", JSON.stringify({ ...base, ...(obj || {}) }));
+  }catch(_e){
+    console.log("[LOG]", base.ts, tag);
+  }
+}
+
 // ======= AI 身份设定（System Prompt）=======
 function buildSystemIdentity(){
   return `你是“益群的专属聊天助手”，运行在益群自己集成与开发的聊天终端中。
@@ -243,6 +289,7 @@ function isHttps(req){
 // If code matches INVITE_CODE, set sid cookie (httpOnly) and mark session activated.
 app.post("/api/auth", (req, res) => {
   const code = String((req.body && req.body.code) || "").trim();
+  logEvent(req, "auth_attempt", { ok: false });
 
   if(!INVITE_CODE){
     return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
@@ -264,7 +311,7 @@ app.post("/api/auth", (req, res) => {
     secure: true,
     maxAge: 1000 * 60 * 60 * 24 * 30 // 30 days
   });
-
+  logEvent(req, "auth_success", { ok: true });
   return res.json({ ok: true });
 });
 
@@ -732,10 +779,18 @@ app.get("/api/ping", (req, res) => {
 // ======= image generation =======
 app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX), async (req, res) => {
   try{
+    const ip = getClientIp(req);
+    const sid = shortSid(req);
     const { prompt, mode, model } = req.body || {};
     const p = String(prompt || "").trim();
     if(!p) return res.status(400).json({ error: "prompt required" });
     if(p.length > 1000) return res.status(400).json({ error: "prompt too long" });
+
+    logEvent(req, "image_request", {
+      mode: safeStr(mode),
+      model: safeStr(model),
+      prompt: clipText(p)
+    });
 
     const useGrok = (
       mode === "infinity" ||
@@ -776,7 +831,16 @@ app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX),
 
 app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX), async (req, res) => {
   try {
+    const ip = getClientIp(req);
+    const sid = shortSid(req);
     const { history, mode, model, stream } = req.body || {};
+    // Safe request logging (no keys/cookies/headers)
+    logEvent(req, "chat_request", {
+      mode: safeStr(mode),
+      model: safeStr(model),
+      stream: !!(stream === true || stream === 1 || stream === "1" || String(stream || "").toLowerCase() === "true"),
+      history_len: Array.isArray(history) ? history.length : -1
+    });
     // SECURITY: strict input limits to prevent cost abuse
     if(!Array.isArray(history)) return res.status(400).json({ error: "history must be an array" });
     if(history.length < 1) return res.status(400).json({ error: "history is empty" });
@@ -819,6 +883,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     // 必须至少有一条 user，否则直接报错
     const lastUser = [...input].reverse().find(m => m && m.role === "user" && String(m.content || "").trim());
     if (!lastUser) throw new Error("history 里没有有效的 user 消息");
+    logEvent(req, "chat_user", { text: clipText(lastUser.content) });
 
     // ✅ Backend injects system prompt and rule-probe guard (kept out of front-end)
     const sysPrompt = getSystemPromptForMode(mode);
@@ -848,6 +913,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       }
 
       const reply = await callGrok(messages, grokModel);
+      logEvent(req, "chat_reply", { provider: "grok", len: safeStr(reply).length });
       return res.json({ reply });
     }
 
@@ -908,8 +974,11 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     });
     console.log("⏱ GPT responses ms =", Date.now() - gptT0, "mode=", mode, "model=", gptModel, "input_len=", Array.isArray(messages) ? messages.length : 0);
 
-    res.json({ reply: resp.output_text || "" });
+    const out = resp.output_text || "";
+    logEvent(req, "chat_reply", { provider: "openai", len: safeStr(out).length });
+    res.json({ reply: out });
   } catch (e) {
+    logEvent(req, "chat_error", { message: clipText(e?.message || "server error") });
     // 如果已经开始 SSE/写入了 body，就不能再 setHeader/status/send
     if(res.headersSent){
       try{
