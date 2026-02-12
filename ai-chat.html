@@ -433,7 +433,7 @@ transform: translateY(-4px);
 .modelMenu.show{
     display:flex;
 }
-
+.isHidden{ display:none !important; }
 .modelItem{
     padding:14px 20px;
     cursor:pointer;
@@ -665,6 +665,7 @@ transform: translateY(-4px);
   </div>
   <div class="headerActions">
     <button class="chipBtn" id="modelBtn" title="模型选择" type="button">模型</button>
+    <button class="iconBtn" id="unlockBtn" title="搜索/输入密钥解锁天晴" type="button">🔍</button>
 <button class="chipBtn" id="imageBtn" title="生成图片" type="button">🖼 图片</button>
 <button class="chipBtn" id="privacyBtn" title="隐私模式：不保存聊天历史" type="button">隐私：关</button>
 <button class="chipBtn" id="newChatBtn" title="新聊天" type="button">＋ 新聊天</button>
@@ -675,7 +676,7 @@ transform: translateY(-4px);
 <div id="modelMenu" class="modelMenu">
     <div class="modelItem" data-model="strong">益群大模型（最强）</div>
     <div class="modelItem" data-model="cheap">弱智模式（最便宜）</div>
-    <div class="modelItem" data-model="tianqing">天晴小宝贝（最强）</div>
+    <div class="modelItem isHidden" id="tianqingItem" data-model="tianqing">天晴小宝贝（最强）</div>
     <div class="modelItem" data-model="infinity">无尽模型（慎试）</div>
 </div>
 
@@ -815,6 +816,8 @@ const modelBtn = document.getElementById("modelBtn");
 const modelMenu = document.getElementById("modelMenu");
 const modelItems = document.querySelectorAll(".modelItem");
 const modelBadge = document.getElementById("modelBadge");
+const unlockBtn = document.getElementById("unlockBtn");
+const tianqingItem = document.getElementById("tianqingItem");
 // ======= 图片弹窗 DOM =======
 const imageBtn = document.getElementById("imageBtn");
 const imgModal = document.getElementById("imgModal");
@@ -1595,6 +1598,45 @@ clearBtn.addEventListener("click", ()=>{
 
 // ======= 模型选择逻辑 =======
 let currentModelMode = "cheap";
+// ======= 天晴小宝贝：前端解锁开关（后端之后会二次校验） =======
+const TIANQING_KEY_STORAGE = "tianqing_unlock_key";
+
+function hasTianqingKey(){
+  return !!String(sessionStorage.getItem(TIANQING_KEY_STORAGE) || "").trim();
+}
+
+function setTianqingKey(k){
+  const v = String(k || "").trim();
+  if(v){
+    sessionStorage.setItem(TIANQING_KEY_STORAGE, v);
+  }else{
+    sessionStorage.removeItem(TIANQING_KEY_STORAGE);
+  }
+  updateTianqingVisibility();
+}
+
+function updateTianqingVisibility(){
+  const unlocked = hasTianqingKey();
+  if(tianqingItem){
+    tianqingItem.classList.toggle("isHidden", !unlocked);
+  }
+
+  // 如果当前正在天晴，但又被锁上了，就自动切回 cheap
+  if(!unlocked && currentModelMode === "tianqing"){
+    currentModelMode = "cheap";
+    modelBtn.textContent = "弱智模式";
+    if(modelBadge) modelBadge.textContent = "弱智模式";
+  }
+
+  // 顶部按钮提示（可选：解锁后变成🔓，未解锁是🔍）
+  if(unlockBtn){
+    unlockBtn.textContent = unlocked ? "🔓" : "🔍";
+    unlockBtn.title = unlocked ? "已解锁天晴（点我可清除/重新输入）" : "搜索/输入密钥解锁天晴";
+  }
+}
+
+// 初始化：根据 sessionStorage 决定是否显示“天晴小宝贝”
+updateTianqingVisibility();
 modelBtn.textContent = "弱智模式";
 if(modelBadge) modelBadge.textContent = "弱智模式";
 
@@ -1610,7 +1652,13 @@ document.addEventListener("click", (e)=>{
 
 modelItems.forEach(item=>{
     item.addEventListener("click", ()=>{
-        currentModelMode = item.dataset.model;
+        const nextMode = item.dataset.model;
+        // 天晴模式需要先解锁
+        if(nextMode === "tianqing" && !hasTianqingKey()){
+          alert("先点右侧🔍输入密钥，才能进入天晴小宝贝模式。");
+          return;
+        }
+        currentModelMode = nextMode;
         modelMenu.classList.remove("show");
 
         if(currentModelMode === "strong"){
@@ -1631,6 +1679,28 @@ modelItems.forEach(item=>{
         }
     });
 });
+// ======= 解锁按钮：输入密钥后显示“天晴小宝贝”模式 =======
+if(unlockBtn){
+  unlockBtn.addEventListener("click", ()=>{
+    const unlocked = hasTianqingKey();
+    if(unlocked){
+      const ok = confirm("已解锁天晴。\n\n点“确定”清除密钥并隐藏天晴；点“取消”重新输入密钥。")
+      if(ok){
+        setTianqingKey("");
+        return;
+      }
+    }
+
+    const k = String(prompt("输入密钥：解锁天晴小宝贝模式（只在本标签页生效）") || "").trim();
+    if(!k){
+      // 不输入：不解锁
+      setTianqingKey("");
+      return;
+    }
+    setTianqingKey(k);
+    alert("已解锁：天晴小宝贝模式已出现在模型列表里。");
+  });
+}
 
 // ======= 页面初始化：放到 BACKEND_URL 定义之后执行 =======
 
@@ -1950,6 +2020,8 @@ createNewSession();
 checkBackend();
 setInterval(checkBackend, 5000);
 autoGrowTextarea();
+// 确保刷新后依然按密钥状态显示/隐藏天晴
+updateTianqingVisibility();
 
 async function callAI(msg, modeLocked = currentModelMode){
   lastCallAborted = false;
@@ -1982,20 +2054,29 @@ async function callAI(msg, modeLocked = currentModelMode){
     };
   });
 
+  const tKey = (modeLocked === "tianqing")
+    ? String(sessionStorage.getItem("tianqing_unlock_key") || "").trim()
+    : "";
+
   const payload = {
     history: normalizedHistory,
     mode: modeLocked,
-    stream: true
+    stream: true,
+    // 后端会二次校验；这里不做任何打印/显示，避免泄露
+    ...(tKey ? { tianqing_key: tKey } : {})
   };
 
   currentAbortController = new AbortController();
 
+  const headers = authHeaders();
+  if(tKey) headers["X-Tianqing-Key"] = tKey;
+
   const r = await apiFetch(CHAT_URL, {
-  method: "POST",
-  headers: authHeaders(),
-  body: JSON.stringify(payload),
-  signal: currentAbortController.signal
-});
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+    signal: currentAbortController.signal
+  });
 
   if(!r.ok){
     if(r.status === 401){
