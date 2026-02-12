@@ -1,4 +1,4 @@
-\<!DOCTYPE html>
+<!DOCTYPE html>
 <html lang="zh">
 <head>
 <meta charset="UTF-8" />
@@ -674,8 +674,8 @@ transform: translateY(-4px);
 
 <div id="modelMenu" class="modelMenu">
     <div class="modelItem" data-model="strong">益群大模型（最强）</div>
-    <div class="modelItem" data-model="normal">益群睡觉模式（普通）</div>
     <div class="modelItem" data-model="cheap">弱智模式（最便宜）</div>
+    <div class="modelItem" data-model="tianqing">天晴小宝贝（最强）</div>
     <div class="modelItem" data-model="infinity">无尽模型（慎试）</div>
 </div>
 
@@ -1617,13 +1617,13 @@ modelItems.forEach(item=>{
             modelBtn.textContent = "益群大模型";
             if(modelBadge) modelBadge.textContent = "益群大模型";
         }
-        if(currentModelMode === "normal"){
-            modelBtn.textContent = "益群睡觉模式";
-            if(modelBadge) modelBadge.textContent = "益群睡觉模式";
-        }
         if(currentModelMode === "cheap"){
             modelBtn.textContent = "弱智模式";
             if(modelBadge) modelBadge.textContent = "弱智模式";
+        }
+        if(currentModelMode === "tianqing"){
+            modelBtn.textContent = "天晴小宝贝";
+            if(modelBadge) modelBadge.textContent = "天晴小宝贝";
         }
         if(currentModelMode === "infinity"){
             modelBtn.textContent = "无尽模型";
