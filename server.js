@@ -933,15 +933,39 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     // ===== Save chat to Supabase =====
     try {
-      await supabase.from("chat_logs").insert({
-        user_text: lastUser.content,
-        mode: mode || "default",
-        ip: ip,
-        sid: sid || null,
-        tianqing_unlocked: (String(mode || "").trim() === "tianqing") ? verifyTianqingKey(req) : null
-      });
+      const { data, error } = await supabase
+        .from("chat_logs")
+        .insert({
+          user_text: lastUser.content,
+          mode: mode || "default",
+          ip: ip,
+          sid: sid || null,
+          tianqing_unlocked: (String(mode || "").trim() === "tianqing") ? verifyTianqingKey(req) : null
+        })
+        // ask Supabase to return something minimal so we can confirm inserts
+        .select("id")
+        .limit(1);
+
+      if (error) {
+        console.log("[SUPABASE_ERROR]", {
+          message: error.message,
+          details: error.details,
+          hint: error.hint,
+          code: error.code,
+          status: error.status
+        });
+        logEvent(req, "supabase_insert_failed", {
+          message: clipText(error.message || "insert failed"),
+          code: safeStr(error.code),
+          status: safeStr(error.status)
+        });
+      } else {
+        const insertedId = Array.isArray(data) && data[0] && data[0].id ? String(data[0].id) : "";
+        logEvent(req, "supabase_insert_ok", { ok: true, id: insertedId ? insertedId.slice(0, 8) : "" });
+      }
     } catch (dbErr) {
       console.log("[SUPABASE_ERROR]", dbErr?.message || dbErr);
+      logEvent(req, "supabase_insert_failed", { message: clipText(dbErr?.message || "insert exception") });
     }
 
     // ✅ Backend injects system prompt and rule-probe guard (kept out of front-end)
@@ -1084,3 +1108,4 @@ function pickGptModelByMode(mode){
   // Default: strongest
   return strong;
 }
+
