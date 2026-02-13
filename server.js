@@ -933,36 +933,69 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     // ===== Save chat to Supabase =====
     try {
-      const { data, error } = await supabase
+      // First try: insert with optional column `tianqing_unlocked`
+      const payloadFull = {
+        user_text: lastUser.content,
+        mode: mode || "default",
+        ip: ip,
+        sid: sid || null,
+        tianqing_unlocked: (String(mode || "").trim() === "tianqing") ? verifyTianqingKey(req) : null
+      };
+
+      const { data: d1, error: e1 } = await supabase
         .from("chat_logs")
-        .insert({
-          user_text: lastUser.content,
-          mode: mode || "default",
-          ip: ip,
-          sid: sid || null,
-          tianqing_unlocked: (String(mode || "").trim() === "tianqing") ? verifyTianqingKey(req) : null
-        })
-        // ask Supabase to return something minimal so we can confirm inserts
+        .insert(payloadFull)
         .select("id")
         .limit(1);
 
-      if (error) {
-        console.log("[SUPABASE_ERROR]", {
-          message: error.message,
-          details: error.details,
-          hint: error.hint,
-          code: error.code,
-          status: error.status
-        });
-        logEvent(req, "supabase_insert_failed", {
-          message: clipText(error.message || "insert failed"),
-          code: safeStr(error.code),
-          status: safeStr(error.status)
-        });
-      } else {
-        const insertedId = Array.isArray(data) && data[0] && data[0].id ? String(data[0].id) : "";
+      if(e1){
+        const msg = String(e1.message || "");
+        const code = String(e1.code || "");
+
+        // If the table doesn't have the column (your PGRST204 error), retry without it.
+        const looksLikeMissingCol = code === "PGRST204" && msg.includes("tianqing_unlocked");
+        if(looksLikeMissingCol){
+          const payloadLite = {
+            user_text: lastUser.content,
+            mode: mode || "default",
+            ip: ip,
+            sid: sid || null
+          };
+
+          const { data: d2, error: e2 } = await supabase
+            .from("chat_logs")
+            .insert(payloadLite)
+            .select("id")
+            .limit(1);
+
+          if(e2){
+            console.log("[SUPABASE_ERROR]", {
+              message: e2.message,
+              details: e2.details,
+              hint: e2.hint,
+              code: e2.code,
+              status: e2.status
+            });
+            logEvent(req, "supabase_insert_failed", { message: clipText(e2.message || "insert failed"), code: safeStr(e2.code), status: safeStr(e2.status) });
+          }else{
+            const insertedId = Array.isArray(d2) && d2[0] && d2[0].id ? String(d2[0].id) : "";
+            logEvent(req, "supabase_insert_ok", { ok: true, id: insertedId ? insertedId.slice(0, 8) : "" });
+          }
+        }else{
+          console.log("[SUPABASE_ERROR]", {
+            message: e1.message,
+            details: e1.details,
+            hint: e1.hint,
+            code: e1.code,
+            status: e1.status
+          });
+          logEvent(req, "supabase_insert_failed", { message: clipText(e1.message || "insert failed"), code: safeStr(e1.code), status: safeStr(e1.status) });
+        }
+      }else{
+        const insertedId = Array.isArray(d1) && d1[0] && d1[0].id ? String(d1[0].id) : "";
         logEvent(req, "supabase_insert_ok", { ok: true, id: insertedId ? insertedId.slice(0, 8) : "" });
       }
+
     } catch (dbErr) {
       console.log("[SUPABASE_ERROR]", dbErr?.message || dbErr);
       logEvent(req, "supabase_insert_failed", { message: clipText(dbErr?.message || "insert exception") });
@@ -1108,4 +1141,3 @@ function pickGptModelByMode(mode){
   // Default: strongest
   return strong;
 }
-
