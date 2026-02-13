@@ -2085,6 +2085,7 @@ async function callAI(msg, modeLocked = currentModelMode){
     history: normalizedHistory,
     mode: modeLocked,
     stream: true,
+    privacy_mode: privacyMode,
     // 后端会二次校验；这里不做任何打印/显示，避免泄露
     ...(tKey ? { tianqing_key: tKey } : {})
   };
