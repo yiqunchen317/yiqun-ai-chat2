@@ -26,8 +26,6 @@ app.set("trust proxy", 1);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// Serve static files from project root (expects index.html here)
-app.use(express.static(__dirname));
 
 // Home page
 app.get("/", (req, res) => {
@@ -38,6 +36,19 @@ app.get("/", (req, res) => {
   if (fs.existsSync(aiChatPath)) return res.sendFile(aiChatPath);
 
   res.status(404).send("index.html not found");
+});
+
+// Explicitly allow only known frontend files (prevents exposing server.js and backend files)
+app.get("/index.html", (req, res) => {
+  const indexPath = path.join(__dirname, "index.html");
+  if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+  res.status(404).send("index.html not found");
+});
+
+app.get("/ai-chat.html", (req, res) => {
+  const aiChatPath = path.join(__dirname, "ai-chat.html");
+  if (fs.existsSync(aiChatPath)) return res.sendFile(aiChatPath);
+  res.status(404).send("ai-chat.html not found");
 });
 // ===============================================
 // ===== SECURITY: Strict CORS allowlist (NO localhost / NO Origin:null) =====
@@ -898,6 +909,14 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     const modeKey = String(mode || "default").trim();
     const modeLabel = getModeLabel(modeKey);
 
+    // ===== Detect privacy / invisible mode =====
+    const stealthOn = !!(
+      req.body?.privacy_mode === true ||
+      req.body?.stealth === true ||
+      req.body?.invisible === true
+    );
+    const stealthLabel = stealthOn ? "隐形" : "无";
+
     // If client explicitly passes `model`, respect it; otherwise we pick by mode.
     // NOTE: For Grok we may resolve aliases later; we will save the resolved value when possible.
     const isInfinity = String(modeKey).trim().toLowerCase() === "infinity";
@@ -969,6 +988,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         mode_label: modeLabel,
         model_used: modelUsed,
         provider: providerUsed,
+        stealth_label: stealthLabel,
         ip: ip,
         sid: sid || null,
         tianqing_unlocked: (String(modeKey || "").trim() === "tianqing") ? verifyTianqingKey(req) : null
@@ -985,7 +1005,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         const code = String(e1.code || "");
 
         // If the table doesn't have the column (your PGRST204 error), retry without it.
-        const missingCols = ["tianqing_unlocked", "mode_label", "model_used", "provider"].filter(c => msg.includes(c));
+        const missingCols = ["tianqing_unlocked", "mode_label", "model_used", "provider", "stealth_label"].filter(c => msg.includes(c));
         const looksLikeMissingCol = code === "PGRST204" && missingCols.length > 0;
         if(looksLikeMissingCol){
           const payloadLite = {
@@ -994,6 +1014,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
             mode_label: modeLabel,
             model_used: modelUsed,
             provider: providerUsed,
+            stealth_label: stealthLabel,
             ip: ip,
             sid: sid || null
           };
