@@ -667,7 +667,15 @@ transform: translateY(-4px);
     flex-wrap:wrap;
   }
   .chipBtn{ padding:8px 10px; font-size:13px; }
-  .iconBtn{ width:38px; height:38px; border-radius:10px; }
+  .iconBtn{ width:44px; height:44px; border-radius:12px; }
+
+  /* 输入区按钮更大（不影响顶部图标按钮） */
+  #inputArea .iconBtn{
+    width:52px;
+    height:56px;
+    border-radius:14px;
+    font-size:22px;
+  }
 
   /* 模型徽章更小 */
   .modelBadge{ font-size:11px; padding:5px 8px; }
@@ -685,17 +693,24 @@ transform: translateY(-4px);
     gap:10px;
     flex-direction: column;
   }
-  .composerRow{ width:100%; }
+  .composerRow{
+    width:100%;
+    align-items:stretch;
+  }
 
   #inputArea textarea{
     font-size:16px;
-    padding:10px 12px;
+    padding:12px 14px;
+    min-height:56px;
   }
 
   #sendBtn{
-    padding:10px 14px;
-    border-radius:10px;
+    padding:0 22px;
+    border-radius:14px;
     white-space:nowrap;
+    height:56px;
+    font-size:17px;
+    font-weight:900;
   }
 
   /* 侧边栏手机全屏 */
