@@ -1449,7 +1449,6 @@ if(/^\/(img|图)\s+/i.test(text)){
 
     try{
       const h = authHeaders();
-      h["X-User-Name"] = getUserName();
 
       const r = await apiFetch(IMAGE_URL, {
         method: "POST",
@@ -2046,7 +2045,6 @@ async function generateImageFromModal(){
   try{
     const modeLocked = currentModelMode;
     const h = authHeaders();
-    h["X-User-Name"] = getUserName();
 
     const r = await apiFetch(IMAGE_URL, {
       method: "POST",
@@ -2104,7 +2102,6 @@ async function regenerateImageForMessage(messageId){
   // 复用你现有的图片请求（你现在 /img 功能里就在用）
   if(DEBUG) console.log("[regen] request", { prompt: prompt.slice(0,120), modeLocked });
   const h = authHeaders();
-  h["X-User-Name"] = getUserName();
 
   const r = await apiFetch(IMAGE_URL, {
     method: "POST",
@@ -2269,7 +2266,6 @@ async function callAI(msg, modeLocked = currentModelMode){
 
   const headers = authHeaders();
   if(tKey) headers["X-Tianqing-Key"] = tKey;
-  headers["X-User-Name"] = getUserName();
 
   const r = await apiFetch(CHAT_URL, {
     method: "POST",
