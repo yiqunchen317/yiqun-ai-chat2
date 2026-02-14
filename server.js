@@ -67,7 +67,7 @@ app.use((req, res, next) => {
     res.setHeader("Access-Control-Allow-Origin", origin);
     res.setHeader("Vary", "Origin");
     res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
-    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Tianqing-Key");
+    res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization, X-API-Key, X-Tianqing-Key, X-User-Name");
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
 
@@ -113,6 +113,41 @@ function clipText(text){
   const s = safeStr(text).replace(/\s+/g, " ").trim();
   if(!s) return "";
   return s.length > LOG_MAX_CHARS ? (s.slice(0, LOG_MAX_CHARS) + "…") : s;
+}
+
+function clipLen(s, max){
+  const x = safeStr(s).trim();
+  if(!x) return "";
+  return x.length > max ? x.slice(0, max) : x;
+}
+
+function getUserAgent(req){
+  return clipLen(req.headers["user-agent"], 200);
+}
+
+function getSenderFromReq(req){
+  const b = req.body || {};
+
+  // 1) Explicit user label from frontend or header (recommended)
+  const hName = req.headers["x-user-name"];
+  const raw = (typeof hName === "string" && hName.trim())
+    ? hName.trim()
+    : (b.user_name ?? b.username ?? b.user ?? b.sender ?? b.display_name ?? b.name);
+
+  let name = clipLen(raw, 50).replace(/[\r\n\t]/g, " ").trim();
+  if(name) return name;
+
+  // 2) Special case: tianqing mode always belongs to 天晴
+  const mode = String(b.mode || "").trim();
+  if(mode === "tianqing") return "天晴";
+
+  // 3) Fallback to short sid (stable enough to distinguish users without login)
+  const sid = shortSid(req);
+  if(sid) return "sid:" + sid;
+
+  // 4) Last resort: IP
+  const ip = getClientIp(req);
+  return ip ? ("ip:" + ip) : "unknown";
 }
 
 function logEvent(req, tag, obj){
@@ -846,7 +881,9 @@ app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX),
     logEvent(req, "image_request", {
       mode: safeStr(mode),
       model: safeStr(model),
-      prompt: clipText(p)
+      prompt: clipText(p),
+      sender: getSenderFromReq(req),
+      ua: getUserAgent(req)
     });
 
     const useGrok = (
@@ -891,13 +928,17 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     const ip = getClientIp(req);
     const sid = shortSid(req);
     const { history, mode, model, stream, tianqing_key } = req.body || {};
+    const sender = getSenderFromReq(req);
+    const ua = getUserAgent(req);
     // Safe request logging (no keys/cookies/headers)
     logEvent(req, "chat_request", {
       mode: safeStr(mode),
       model: safeStr(model),
       stream: !!(stream === true || stream === 1 || stream === "1" || String(stream || "").toLowerCase() === "true"),
       history_len: Array.isArray(history) ? history.length : -1,
-      has_tianqing_key: !!getTianqingKeyFromReq(req)
+      has_tianqing_key: !!getTianqingKeyFromReq(req),
+      sender: sender,
+      ua: ua
     });
     // SECURITY: strict input limits to prevent cost abuse
     if(!Array.isArray(history)) return res.status(400).json({ error: "history must be an array" });
@@ -991,7 +1032,9 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         stealth_label: stealthLabel,
         ip: ip,
         sid: sid || null,
-        tianqing_unlocked: (String(modeKey || "").trim() === "tianqing") ? verifyTianqingKey(req) : null
+        tianqing_unlocked: (String(modeKey || "").trim() === "tianqing") ? verifyTianqingKey(req) : null,
+        sender: sender,
+        user_agent: ua,
       };
 
       const { data: d1, error: e1 } = await supabase
@@ -1005,7 +1048,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         const code = String(e1.code || "");
 
         // If the table doesn't have the column (your PGRST204 error), retry without it.
-        const missingCols = ["tianqing_unlocked", "mode_label", "model_used", "provider", "stealth_label"].filter(c => msg.includes(c));
+        const missingCols = ["tianqing_unlocked", "mode_label", "model_used", "provider", "stealth_label", "sender", "user_agent"].filter(c => msg.includes(c));
         const looksLikeMissingCol = code === "PGRST204" && missingCols.length > 0;
         if(looksLikeMissingCol){
           const payloadLite = {
@@ -1016,7 +1059,9 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
             provider: providerUsed,
             stealth_label: stealthLabel,
             ip: ip,
-            sid: sid || null
+            sid: sid || null,
+            sender: sender,
+            user_agent: ua,
           };
           // If PostgREST says a column is missing, strip it and retry.
           for(const c of missingCols){
