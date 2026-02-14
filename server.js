@@ -1054,43 +1054,85 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       }
     }
 
-    // 把历史整理成 messages（简单做法）
-    // 用最简单安全的格式（避免 content block 类型错误）
-    const input = [];
+    // ===== Normalize history (support text + imageUrl) =====
+    const norm = [];
 
     for (const m of history) {
-      if (!m || !m.role || typeof m.text !== "string") continue;
-      const text = m.text.trim();
-      if(!text) continue;
-      if(text.length > 4000) continue;
+      if (!m || !m.role) continue;
+
       // SECURITY: do NOT accept client-provided system messages
       const role = (m.role === "user") ? "user" : "assistant";
-      input.push({ role, content: text });
+
+      const text = (typeof m.text === "string") ? m.text.trim() : "";
+      const imageUrl = (typeof m.imageUrl === "string") ? m.imageUrl.trim() : "";
+
+      // Drop empty items
+      if(!text && !imageUrl) continue;
+
+      // Basic size limits
+      if(text && text.length > 4000) continue;
+      if(imageUrl && imageUrl.length > 2000) continue;
+
+      norm.push({ role, text, imageUrl });
     }
 
-    const totalChars = input.reduce((sum, x) => sum + String(x.content || "").length, 0);
+    // Compute a conservative "size" for abuse prevention
+    const totalChars = norm.reduce((sum, x) => {
+      return sum + String(x.text || "").length + String(x.imageUrl || "").length;
+    }, 0);
     if(totalChars > 20000) return res.status(400).json({ error: "history too large" });
 
-    // ✅ 后端严格：只用 history，不再额外追加 message（否则容易重复/空消息）
-    // 去掉末尾连续重复的 user（内容完全相同）
-    for (let i = input.length - 1; i > 0; i--) {
-      const a = input[i];
-      const b = input[i - 1];
+    // 去掉末尾连续重复的 user（文本+图片 完全相同）
+    for (let i = norm.length - 1; i > 0; i--) {
+      const a = norm[i];
+      const b = norm[i - 1];
       if (!a || !b) continue;
-      const at = String(a.content || "").trim();
-      const bt = String(b.content || "").trim();
-      if (a.role === "user" && b.role === "user" && at && at === bt) {
-        input.splice(i, 1);
+
+      const at = (String(a.text || "").trim() + "|" + String(a.imageUrl || "").trim());
+      const bt = (String(b.text || "").trim() + "|" + String(b.imageUrl || "").trim());
+
+      if (a.role === "user" && b.role === "user" && at.trim() && at === bt) {
+        norm.splice(i, 1);
         break;
       }
-      // 只处理末尾连续段
       if (a.role === "user" && b.role !== "user") break;
     }
 
-    // 必须至少有一条 user，否则直接报错
-    const lastUser = [...input].reverse().find(m => m && m.role === "user" && String(m.content || "").trim());
-    if (!lastUser) throw new Error("history 里没有有效的 user 消息");
-    logEvent(req, "chat_user", { text: clipText(lastUser.content) });
+    // 必须至少有一条 user（允许 image-only）
+    const lastUserNorm = [...norm].reverse().find(x => x && x.role === "user" && (String(x.text || "").trim() || String(x.imageUrl || "").trim()));
+    if (!lastUserNorm) throw new Error("history 里没有有效的 user 消息");
+
+    logEvent(req, "chat_user", { text: clipText(lastUserNorm.text || "[image]") });
+
+    // Build provider-specific message format
+    const toGrokText = (x) => {
+      const t = String(x.text || "").trim();
+      const u = String(x.imageUrl || "").trim();
+      if(!u) return t;
+      if(!t) return "[image] " + u;
+      return t + "\n[image] " + u;
+    };
+
+    const toResponsesContent = (x) => {
+      const items = [];
+      const t = String(x.text || "").trim();
+      const u = String(x.imageUrl || "").trim();
+      if(t) items.push({ type: "input_text", text: t });
+      if(u) items.push({ type: "input_image", image_url: u, detail: "auto" });
+      return items;
+    };
+
+    // Prepare both representations
+    const inputForGrok = norm
+      .map(x => ({ role: x.role, content: toGrokText(x) }))
+      .filter(x => x && x.role && String(x.content || "").trim());
+
+    const inputForOpenAI = norm
+      .map(x => ({ role: x.role, content: toResponsesContent(x) }))
+      .filter(x => x && x.role && Array.isArray(x.content) && x.content.length);
+
+    // DB uses last user text (or [image])
+    const lastUser = { role: "user", content: (String(lastUserNorm.text || "").trim() || "[image]") };
 
     // ===== Save chat to Supabase =====
     try {
@@ -1183,10 +1225,17 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     const sysPrompt = getSystemPromptForMode(mode);
     const guard = isRuleProbe(lastUser.content) ? ruleProbeGuardText() : "";
 
-    const messages = [
+    // For Grok we keep plain text; for OpenAI Responses we use multimodal content arrays.
+    const messagesForGrok = [
       { role: "system", content: sysPrompt },
       ...(guard ? [{ role: "system", content: guard }] : []),
-      ...input
+      ...inputForGrok
+    ];
+
+    const messagesForOpenAI = [
+      { role: "system", content: [{ type: "input_text", text: sysPrompt }] },
+      ...(guard ? [{ role: "system", content: [{ type: "input_text", text: guard }] }] : []),
+      ...inputForOpenAI
     ];
 
     // ⭐ 无尽模式（Grok）
@@ -1213,11 +1262,11 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         // 先写一行注释，强制浏览器立刻进入“流”模式，避免缓冲
         res.write(":ok\n\n");
 
-        await callGrokStream(messages, res, grokModel);
+        await callGrokStream(messagesForGrok, res, grokModel);
         return res.end();
       }
 
-      const reply = await callGrok(messages, grokModel);
+      const reply = await callGrok(messagesForGrok, grokModel);
       logEvent(req, "chat_reply", { provider: "grok", len: safeStr(reply).length });
       return res.json({ reply });
     }
@@ -1241,7 +1290,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       try{
         const s = await getOpenAI().responses.create({
           model: gptModel,
-          input: messages,
+          input: messagesForOpenAI,
           stream: true
         });
 
@@ -1264,12 +1313,12 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
       // fallback: no deltas -> send full text as one chunk
       if(!streamedAny){
-        const resp = await getOpenAI().responses.create({ model: gptModel, input: messages });
+        const resp = await getOpenAI().responses.create({ model: gptModel, input: messagesForOpenAI });
         const full = resp.output_text || "";
         res.write(`data: ${JSON.stringify({ delta: full })}\n\n`);
       }
 
-      console.log("⏱ GPT responses ms =", Date.now() - gptT0, "mode=", mode, "model=", gptModel, "input_len=", Array.isArray(messages) ? messages.length : 0);
+      console.log("⏱ GPT responses ms =", Date.now() - gptT0, "mode=", mode, "model=", gptModel, "input_len=", Array.isArray(messagesForOpenAI) ? messagesForOpenAI.length : 0);
       res.write(`event: done\ndata: {}\n\n`);
       return res.end();
     }
@@ -1277,9 +1326,9 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     const gptT0 = Date.now();
     const resp = await getOpenAI().responses.create({
       model: gptModel,
-      input: messages
+      input: messagesForOpenAI
     });
-    console.log("⏱ GPT responses ms =", Date.now() - gptT0, "mode=", mode, "model=", gptModel, "input_len=", Array.isArray(messages) ? messages.length : 0);
+    console.log("⏱ GPT responses ms =", Date.now() - gptT0, "mode=", mode, "model=", gptModel, "input_len=", Array.isArray(messagesForOpenAI) ? messagesForOpenAI.length : 0);
 
     const out = resp.output_text || "";
     logEvent(req, "chat_reply", { provider: "openai", len: safeStr(out).length });
