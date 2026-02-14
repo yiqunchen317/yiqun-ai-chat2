@@ -19,6 +19,7 @@ const supabase = createClient(
   process.env.SUPABASE_URL,
   process.env.SUPABASE_SERVICE_ROLE_KEY
 );
+const SUPABASE_BUCKET = String(process.env.SUPABASE_BUCKET || "uploads").trim() || "uploads";
 
 // ===== SECURITY: trust proxy so IP works on Render =====
 app.set("trust proxy", 1);
@@ -467,6 +468,7 @@ function requireActivatedOrApiKey(req, res, next){
 const RATE_WINDOW_MS = Number(process.env.RATE_WINDOW_MS || 60000);
 const RATE_CHAT_MAX = Number(process.env.RATE_CHAT_MAX || 30);
 const RATE_IMG_MAX  = Number(process.env.RATE_IMG_MAX  || 10);
+const RATE_UPLOAD_MAX = Number(process.env.RATE_UPLOAD_MAX || 20);
 
 const _rate = new Map();
 // prevent unbounded memory growth
@@ -867,6 +869,76 @@ async function callGrokStream(messages, res, grokModel = "grok-2-latest"){
 // health check
 app.get("/api/ping", (req, res) => {
   res.json({ ok: true, ts: Date.now() });
+});
+
+// ======= photo upload (Supabase Storage signed upload) =======
+// Frontend flow:
+// 1) POST /api/upload/sign  -> returns { signedUrl, path, token }
+// 2) PUT file to signedUrl  (direct to Supabase)
+// 3) POST /api/upload/url   -> returns a short-lived signed download url
+
+app.post("/api/upload/sign", requireActivatedOrApiKey, rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
+  try{
+    const { filename, contentType } = req.body || {};
+    const fn = String(filename || "").trim();
+    const ct = String(contentType || "").trim();
+
+    if(!fn || !ct) return res.status(400).json({ error: "filename and contentType required" });
+    if(!/^image\//i.test(ct)) return res.status(400).json({ error: "Only image/* is allowed" });
+
+    // sanitize ext
+    const extRaw = (fn.split(".").pop() || "jpg").toLowerCase();
+    const ext = extRaw.replace(/[^a-z0-9]/g, "") || "jpg";
+
+    // create unique path
+    const id = crypto.randomBytes(16).toString("hex");
+    const objectPath = `photos/${Date.now()}_${id}.${ext}`;
+
+    const { data, error } = await supabase
+      .storage
+      .from(SUPABASE_BUCKET)
+      .createSignedUploadUrl(objectPath);
+
+    if(error) return res.status(500).json({ error: error.message || "createSignedUploadUrl failed" });
+
+    // data: { signedUrl, path, token }
+    return res.json({
+      bucket: SUPABASE_BUCKET,
+      path: data.path || objectPath,
+      signedUrl: data.signedUrl,
+      token: data.token
+    });
+
+  }catch(e){
+    return res.status(500).json({ error: e?.message || "upload sign error" });
+  }
+});
+
+app.post("/api/upload/url", requireActivatedOrApiKey, rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
+  try{
+    const { path: p } = req.body || {};
+    const objectPath = String(p || "").trim();
+    if(!objectPath) return res.status(400).json({ error: "path required" });
+
+    // 1 hour signed download url
+    const expiresIn = Number(process.env.UPLOAD_URL_EXPIRES || 3600);
+
+    const { data, error } = await supabase
+      .storage
+      .from(SUPABASE_BUCKET)
+      .createSignedUrl(objectPath, expiresIn);
+
+    if(error) return res.status(500).json({ error: error.message || "createSignedUrl failed" });
+
+    return res.json({
+      bucket: SUPABASE_BUCKET,
+      path: objectPath,
+      signedUrl: data.signedUrl,
+      expiresIn
+    });
+  }catch(e){
+    return res.status(500).json({ error: e?.message || "upload url error" });
+  }
 });
 // ======= image generation =======
 app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX), async (req, res) => {
