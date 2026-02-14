@@ -81,6 +81,68 @@ header{
     gap:10px;
 }
 
+/* ======= 可自定义名字（点击改名） ======= */
+#userNameSpan{
+  cursor:pointer;
+  font-weight:900;
+  letter-spacing:0.6px;
+  user-select:none;
+}
+#userNameSpan:hover{
+  text-decoration: underline;
+  text-underline-offset: 4px;
+}
+
+/* ======= 名字弹窗 ======= */
+#nameModal{
+  position:fixed;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:130;
+}
+#nameModal.show{ display:flex; }
+#nameModal .backdrop{
+  position:absolute;
+  inset:0;
+  background:rgba(0,0,0,0.55);
+}
+#nameModal .panel{
+  position:relative;
+  width:min(420px, calc(100vw - 32px));
+  background:rgba(15,23,42,0.96);
+  border:1px solid rgba(255,255,255,0.10);
+  border-radius:16px;
+  backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
+  box-shadow:0 22px 60px rgba(0,0,0,0.45);
+  padding:16px;
+}
+#nameModal .panel h3{ margin:0 0 10px; font-size:16px; }
+#nameModal .row{ display:flex; gap:10px; justify-content:flex-end; margin-top:12px; }
+#nameModal .muted{ margin-top:8px; font-size:12px; color:#94a3b8; line-height:1.35; }
+#nameModal .fieldLabel{ margin-top:10px; font-size:13px; color:#cbd5e1; }
+#nameModal input[type="text"]{
+  width:100%;
+  padding:12px 14px;
+  font-size:16px;
+  border:1px solid rgba(255,255,255,0.10);
+  border-radius:14px;
+  outline:none;
+  background:rgba(2,6,23,0.62);
+  color:white;
+}
+#nameModal input[type="text"]::placeholder{ color:#64748b; }
+#nameModal input[type="color"]{
+  margin-top:8px;
+  width:64px;
+  height:36px;
+  border:none;
+  background:transparent;
+  cursor:pointer;
+}
+
 .headerActions{
     display:flex;
     align-items:center;
@@ -658,7 +720,7 @@ transform: translateY(-4px);
 
 <header>
   <button class="iconBtn" id="menuBtn" title="历史">☰</button>
-  <div class="title">🤖 益群的电子奴隶 
+  <div class="title">🤖 <span id="userNameSpan">益群</span>的电子奴隶 
     <span id="modelBadge" class="modelBadge">弱智模式</span>
     <span id="statusDot" class="statusDot" title="连接状态"></span>
     <span id="statusText" class="statusText">检测中…</span>
@@ -693,7 +755,26 @@ transform: translateY(-4px);
         <button class="chipBtn" id="imgGenBtn" type="button">生成</button>
       </div>
     </div>
+</div>
+
+<!-- ======= 自定义名字弹窗（邀请码通过后自动弹出；也可点击顶部名字打开） ======= -->
+<div id="nameModal">
+  <div class="backdrop" id="nameModalBackdrop"></div>
+  <div class="panel">
+    <h3>设置你的名字</h3>
+    <input id="nameInput" type="text" placeholder="例如：天晴 / 益群 / Alex" />
+
+    <div class="fieldLabel">名字颜色</div>
+    <input id="nameColor" type="color" value="#ff4d4f" />
+
+    <div class="muted">提示：名字只保存在当前设备（浏览器）里。</div>
+
+    <div class="row">
+      <button class="chipBtn danger" id="nameCancelBtn" type="button">取消</button>
+      <button class="chipBtn" id="nameSaveBtn" type="button">保存</button>
+    </div>
   </div>
+</div>
 
 <div id="layout">
   <aside id="sidebar">
@@ -784,6 +865,54 @@ function fmtTime(ts){
     const d = new Date(ts);
     return d.toLocaleString();
 }
+// ======= 自定义名字（localStorage） =======
+const USER_NAME_KEY = "yq_user_name";
+const USER_COLOR_KEY = "yq_user_color";
+const USER_NAME_SET_ONCE_KEY = "yq_user_name_set_once";
+
+function getUserName(){
+  try{ return String(localStorage.getItem(USER_NAME_KEY) || "").trim() || "益群"; }catch(e){ return "益群"; }
+}
+function getUserColor(){
+  try{ return String(localStorage.getItem(USER_COLOR_KEY) || "").trim() || "#ff4d4f"; }catch(e){ return "#ff4d4f"; }
+}
+function renderUserName(){
+  if(!userNameSpan) return;
+  userNameSpan.textContent = getUserName();
+  userNameSpan.style.color = getUserColor();
+  try{ document.title = getUserName() + "的电子奴隶"; }catch(e){}
+}
+
+function openNameModal(force){
+  if(!nameModal) return;
+  if(nameInput) nameInput.value = getUserName();
+  if(nameColor) nameColor.value = getUserColor();
+  if(nameCancelBtn) nameCancelBtn.style.display = force ? "none" : "inline-flex";
+  nameModal.classList.add("show");
+  setTimeout(()=>{ try{ nameInput && nameInput.focus(); }catch(e){} }, 60);
+}
+function closeNameModal(){
+  if(!nameModal) return;
+  nameModal.classList.remove("show");
+}
+
+function saveUserName(){
+  const n = String(nameInput && nameInput.value ? nameInput.value : "").trim();
+  const c = String(nameColor && nameColor.value ? nameColor.value : "").trim() || "#ff4d4f";
+
+  if(!n){ alert("名字不能为空"); return false; }
+  if(n.length > 20){ alert("名字太长了（最多20个字符）"); return false; }
+
+  try{
+    localStorage.setItem(USER_NAME_KEY, n);
+    localStorage.setItem(USER_COLOR_KEY, c);
+    localStorage.setItem(USER_NAME_SET_ONCE_KEY, "1");
+  }catch(e){}
+
+  renderUserName();
+  closeNameModal();
+  return true;
+}
 
 let sessions = loadSessions();
 let currentSessionId = null;
@@ -825,6 +954,14 @@ const imgModalBackdrop = document.getElementById("imgModalBackdrop");
 const imgPrompt = document.getElementById("imgPrompt");
 const imgGenBtn = document.getElementById("imgGenBtn");
 const imgCancelBtn = document.getElementById("imgCancelBtn");
+// ======= 自定义名字 DOM =======
+const userNameSpan = document.getElementById("userNameSpan");
+const nameModal = document.getElementById("nameModal");
+const nameModalBackdrop = document.getElementById("nameModalBackdrop");
+const nameInput = document.getElementById("nameInput");
+const nameColor = document.getElementById("nameColor");
+const nameSaveBtn = document.getElementById("nameSaveBtn");
+const nameCancelBtn = document.getElementById("nameCancelBtn");
 
 function getCurrentSession(){
     if(!currentSessionId) return null;
@@ -1291,7 +1428,7 @@ async function send(){
         return;
     }
     const modeAtSend = currentModelMode; // 锁定本次请求使用的模式，避免中途切换导致串模式
-// ===== 图片指令：/img 或 /图 =====
+    // ===== 图片指令：/img 或 /图 =====
 if(/^\/(img|图)\s+/i.test(text)){
     const prompt = text.replace(/^\/(img|图)\s+/i, "").trim();
 
@@ -1311,13 +1448,17 @@ if(/^\/(img|图)\s+/i.test(text)){
     const placeholder = history[history.length - 1];
 
     try{
+      const h = authHeaders();
+      h["X-User-Name"] = getUserName();
+
       const r = await apiFetch(IMAGE_URL, {
         method: "POST",
-        headers: authHeaders(),
+        headers: h,
         body: JSON.stringify({
           prompt,
           mode: modeAtSend,
-          model: (modeAtSend === "infinity") ? "grok-imagine-image" : "gpt-image-1"
+          model: (modeAtSend === "infinity") ? "grok-imagine-image" : "gpt-image-1",
+          user_name: getUserName()
         })
       });
 
@@ -1553,6 +1694,25 @@ if(imgPrompt){
       e.preventDefault();
       generateImageFromModal();
     }
+  });
+}
+// ======= 自定义名字：事件 =======
+if(userNameSpan){
+  userNameSpan.addEventListener("click", ()=> openNameModal(false));
+}
+if(nameModalBackdrop){
+  nameModalBackdrop.addEventListener("click", ()=> closeNameModal());
+}
+if(nameCancelBtn){
+  nameCancelBtn.addEventListener("click", ()=> closeNameModal());
+}
+if(nameSaveBtn){
+  nameSaveBtn.addEventListener("click", ()=> saveUserName());
+}
+if(nameInput){
+  nameInput.addEventListener("keydown", (e)=>{
+    if(e.key === "Escape"){ e.preventDefault(); closeNameModal(); return; }
+    if(e.key === "Enter"){ e.preventDefault(); saveUserName(); return; }
   });
 }
 
@@ -1859,7 +2019,12 @@ async function ensureActivatedOnce(){
     const t = await r.text().catch(()=> "");
     throw new Error("邀请码验证失败：" + r.status + " " + t);
   }
-
+  // 邀请码通过后：首次弹出“自定义名字”
+  try{
+    if(String(localStorage.getItem(USER_NAME_SET_ONCE_KEY) || "") !== "1"){
+      openNameModal(true);
+    }
+  }catch(e){}
   return true;
 }
 
@@ -1880,13 +2045,17 @@ async function generateImageFromModal(){
 
   try{
     const modeLocked = currentModelMode;
+    const h = authHeaders();
+    h["X-User-Name"] = getUserName();
+
     const r = await apiFetch(IMAGE_URL, {
       method: "POST",
-      headers: authHeaders(),
+      headers: h,
       body: JSON.stringify({
         prompt: p,
         mode: modeLocked,
-        model: (modeLocked === "infinity") ? "grok-imagine-image" : "gpt-image-1"
+        model: (modeLocked === "infinity") ? "grok-imagine-image" : "gpt-image-1",
+        user_name: getUserName()
       })
     });
 
@@ -1934,13 +2103,17 @@ async function regenerateImageForMessage(messageId){
 
   // 复用你现有的图片请求（你现在 /img 功能里就在用）
   if(DEBUG) console.log("[regen] request", { prompt: prompt.slice(0,120), modeLocked });
+  const h = authHeaders();
+  h["X-User-Name"] = getUserName();
+
   const r = await apiFetch(IMAGE_URL, {
     method: "POST",
-    headers: authHeaders(),
+    headers: h,
     body: JSON.stringify({
       prompt,
       mode: modeLocked,
-      model: (modeLocked === "infinity") ? "grok-imagine-image" : "gpt-image-1"
+      model: (modeLocked === "infinity") ? "grok-imagine-image" : "gpt-image-1",
+      user_name: getUserName()
     })
   });
 
@@ -2045,6 +2218,7 @@ createNewSession();
 checkBackend();
 setInterval(checkBackend, 5000);
 autoGrowTextarea();
+renderUserName();
 // 确保刷新后依然按密钥状态显示/隐藏天晴
 updateTianqingVisibility();
 
@@ -2086,6 +2260,7 @@ async function callAI(msg, modeLocked = currentModelMode){
     mode: modeLocked,
     stream: true,
     privacy_mode: privacyMode,
+    user_name: getUserName(),
     // 后端会二次校验；这里不做任何打印/显示，避免泄露
     ...(tKey ? { tianqing_key: tKey } : {})
   };
@@ -2094,6 +2269,7 @@ async function callAI(msg, modeLocked = currentModelMode){
 
   const headers = authHeaders();
   if(tKey) headers["X-Tianqing-Key"] = tKey;
+  headers["X-User-Name"] = getUserName();
 
   const r = await apiFetch(CHAT_URL, {
     method: "POST",
