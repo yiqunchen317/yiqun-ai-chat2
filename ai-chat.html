@@ -797,6 +797,15 @@ transform: translateY(-4px);
 <div id="inputArea">
   <button id="photoBtn" type="button" class="iconBtn" title="上传照片">📷</button>
   <input id="photoInput" type="file" accept="image/*" style="display:none" />
+
+  <div id="pendingPhoto" style="display:none; align-items:center; gap:10px; padding:6px 8px; margin:6px 0; border-radius:10px; background: rgba(255,255,255,0.06);">
+    <img id="pendingPhotoImg" alt="preview" style="width:56px; height:56px; object-fit:cover; border-radius:10px;" />
+    <div style="flex:1; font-size:12px; opacity:0.9;">
+      已添加照片：在下面输入备注文字，然后点“发送”一起发出
+    </div>
+    <button id="pendingPhotoRemove" type="button" class="iconBtn" title="移除">✖</button>
+  </div>
+
   <textarea id="input" rows="1" placeholder="输入消息...（Enter发送，Shift+Enter换行）"></textarea>
   <button id="sendBtn" type="button">发送</button>
 </div>
@@ -933,6 +942,12 @@ const input = document.getElementById("input");
 const sendBtn = document.getElementById("sendBtn");
 const photoBtn = document.getElementById("photoBtn");
 const photoInput = document.getElementById("photoInput");
+const pendingPhoto = document.getElementById("pendingPhoto");
+const pendingPhotoImg = document.getElementById("pendingPhotoImg");
+const pendingPhotoRemove = document.getElementById("pendingPhotoRemove");
+
+let pendingPhotoFile = null;         
+let pendingPhotoPreviewUrl = "";
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
 const sessionSearch = document.getElementById("sessionSearch");
@@ -1425,8 +1440,10 @@ async function send(){
     sendBtn.classList.add("loading");
     input.disabled = true;
 
-    const text = input.value.trim();
-    if(!text) {
+    const text = String(input.value || "").trim();
+    const hasPhoto = !!pendingPhotoFile;
+
+    if(!text && !hasPhoto) {
         isSending = false;
         currentAbortController = null;
         sendBtn.classList.remove("loading");
@@ -1436,7 +1453,7 @@ async function send(){
     }
     const modeAtSend = currentModelMode; // 锁定本次请求使用的模式，避免中途切换导致串模式
     // ===== 图片指令：/img 或 /图 =====
-if(/^\/(img|图)\s+/i.test(text)){
+if(!hasPhoto && /^\/(img|图)\s+/i.test(text)){
     const prompt = text.replace(/^\/(img|图)\s+/i, "").trim();
 
     // 按当前模式记录用户消息
@@ -1501,12 +1518,56 @@ if(/^\/(img|图)\s+/i.test(text)){
     return;
 }
 
-    // 用锁定模式写入消息（避免发送后马上切模式造成这条消息被标到新模式）
-    const prevMode = currentModelMode;
-    currentModelMode = modeAtSend;
-    add("user",text);
-    currentModelMode = prevMode;
-    input.value = "";
+    // ✅ 如果有照片：先显示“图片预览+备注”，再上传成功后把预览换成最终 URL
+    if(hasPhoto){
+      const prevMode = currentModelMode;
+      currentModelMode = modeAtSend;
+
+      const preview = pendingPhotoPreviewUrl || (pendingPhotoFile ? URL.createObjectURL(pendingPhotoFile) : "");
+      add("user", text, { imageUrl: preview });
+      const msg = history[history.length - 1];
+
+      currentModelMode = prevMode;
+      input.value = "";
+
+      try{
+        if(statusText) statusText.textContent = "上传中…";
+        const finalUrl = await uploadPhotoFile(pendingPhotoFile);
+        if(msg){
+          msg.imageUrl = finalUrl;
+          msg.text = text; // 备注
+        }
+        syncCurrentToStorage();
+        render();
+      }catch(e){
+        if(msg){
+          msg.text = "图片上传失败：" + (e && e.message ? e.message : String(e));
+        }
+        syncCurrentToStorage();
+        render();
+
+        isSending = false;
+        currentAbortController = null;
+        sendBtn.classList.remove("loading");
+        sendBtn.textContent = "发送";
+        input.disabled = false;
+        input.focus();
+        return;
+      }finally{
+        pendingPhotoFile = null;
+        try{ if(pendingPhotoPreviewUrl) URL.revokeObjectURL(pendingPhotoPreviewUrl); }catch(_e){}
+        pendingPhotoPreviewUrl = "";
+        if(pendingPhoto) pendingPhoto.style.display = "none";
+      }
+
+    }else{
+      // 纯文字
+      const prevMode = currentModelMode;
+      currentModelMode = modeAtSend;
+      add("user",text);
+      currentModelMode = prevMode;
+      input.value = "";
+    }
 
     // “正在思考...”也归属本次锁定模式
     const prevMode2 = currentModelMode;
@@ -1678,54 +1739,34 @@ input.addEventListener("keydown", (e)=>{
 sendBtn.addEventListener("click", ()=> send());
 // ======= 上传照片（前端） =======
 async function uploadPhotoFile(file){
-  if(!file) return;
+  if(!file) throw new Error("no file");
 
-  // 先在聊天里放一个“本地预览”气泡（即使后端没做好你也能看到预览）
-  const localPreview = URL.createObjectURL(file);
-  add("user", "（上传中…）", { imageUrl: localPreview });
-  const uploadingMsg = history[history.length - 1];
+  const r1 = await apiFetch(UPLOAD_SIGN_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ filename: file.name, contentType: file.type || "image/jpeg" })
+  });
+  const j1 = await r1.json().catch(()=> ({}));
+  if(!r1.ok) throw new Error(j1.error || ("sign failed: " + r1.status));
 
-  try{
-    // 1) 让后端签名（你后端下一步要实现这两个接口）
-    const r1 = await apiFetch(UPLOAD_SIGN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, contentType: file.type || "image/jpeg" })
-    });
-    const j1 = await r1.json().catch(()=> ({}));
-    if(!r1.ok) throw new Error(j1.error || ("sign failed: " + r1.status));
+  const put = await fetch(j1.signedUrl, {
+    method: "PUT",
+    headers: { "Content-Type": file.type || "image/jpeg" },
+    body: file
+  });
+  if(!put.ok) throw new Error("upload failed: " + put.status);
 
-    // 2) PUT 直传到 Supabase signedUrl
-    const put = await fetch(j1.signedUrl, {
-      method: "PUT",
-      headers: { "Content-Type": file.type || "image/jpeg" },
-      body: file
-    });
-    if(!put.ok) throw new Error("upload failed: " + put.status);
+  const r2 = await apiFetch(UPLOAD_URL_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ path: j1.path })
+  });
+  const j2 = await r2.json().catch(()=> ({}));
+  if(!r2.ok) throw new Error(j2.error || ("url failed: " + r2.status));
 
-    // 3) 让后端给一个可访问的链接（private bucket 用 signed download url）
-    const r2 = await apiFetch(UPLOAD_URL_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ path: j1.path })
-    });
-    const j2 = await r2.json().catch(()=> ({}));
-    if(!r2.ok) throw new Error(j2.error || ("url failed: " + r2.status));
-
-    // 4) 用真实链接替换本地预览
-    if(uploadingMsg){
-      uploadingMsg.imageUrl = String(j2.signedUrl || "").trim() || uploadingMsg.imageUrl;
-      uploadingMsg.text = ""; // 图片气泡不显示文字
-      syncCurrentToStorage();
-      render();
-    }
-  }catch(err){
-    if(uploadingMsg){
-      uploadingMsg.text = "图片上传失败：" + (err && err.message ? err.message : String(err));
-      syncCurrentToStorage();
-      render();
-    }
-  }
+  const finalUrl = String(j2.signedUrl || "").trim();
+  if(!finalUrl) throw new Error("empty image url");
+  return finalUrl;
 }
 
 if(photoBtn && photoInput){
@@ -1747,7 +1788,25 @@ if(photoBtn && photoInput){
       return;
     }
 
-    await uploadPhotoFile(file);
+    // ✅ 只“附加”，不上传不发送
+    pendingPhotoFile = file;
+    try{ if(pendingPhotoPreviewUrl) URL.revokeObjectURL(pendingPhotoPreviewUrl); }catch(e){}
+    pendingPhotoPreviewUrl = URL.createObjectURL(file);
+
+    if(pendingPhotoImg) pendingPhotoImg.src = pendingPhotoPreviewUrl;
+    if(pendingPhoto) pendingPhoto.style.display = "flex";
+
+    try{ input.focus(); }catch(e){}
+  });
+}
+
+// ✅ 点击 ✖ 移除已选图片
+if(pendingPhotoRemove){
+  pendingPhotoRemove.addEventListener("click", ()=>{
+    pendingPhotoFile = null;
+    try{ if(pendingPhotoPreviewUrl) URL.revokeObjectURL(pendingPhotoPreviewUrl); }catch(e){}
+    pendingPhotoPreviewUrl = "";
+    if(pendingPhoto) pendingPhoto.style.display = "none";
   });
 }
 // ======= 图片弹窗事件 =======
@@ -2226,7 +2285,12 @@ function buildContextWindow(){
   // 不读取左侧历史、localStorage 其它会话、其它页面、其它模式等任何东西
   const trimmed = history
     .filter(m => m && (m.role === "user" || m.role === "ai"))
-    .filter(m => m.text && String(m.text).trim())
+    .filter(m => {
+  const t = (m && typeof m.text === "string") ? m.text.trim() : "";
+  const iu = (m && typeof m.imageUrl === "string") ? m.imageUrl.trim() : "";
+  const di = (m && typeof m.image === "string") ? m.image.trim() : "";
+  return !!(t || iu || di);
+})
     .slice(-MAX_CONTEXT_MESSAGES);
 
   // 如果最后一条是“正在思考...”，不要把它发给后端
