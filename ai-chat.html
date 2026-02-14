@@ -403,6 +403,16 @@ will-change: transform;
     gap:12px;
     box-shadow: 0 -10px 26px rgba(0,0,0,0.20);
 }
+/* ===== 输入区：把“已添加照片”做成独立一行，避免挤压输入框 ===== */
+.composerRow{
+  display:flex;
+  align-items:flex-end;
+  gap:12px;
+  width:100%;
+}
+#pendingPhoto{
+  width:100%;
+}
 
 input{
     flex:1;
@@ -673,7 +683,9 @@ transform: translateY(-4px);
     bottom:0;
     padding:10px;
     gap:10px;
+    flex-direction: column;
   }
+  .composerRow{ width:100%; }
 
   #inputArea textarea{
     font-size:16px;
@@ -795,10 +807,7 @@ transform: translateY(-4px);
 </div>
 
 <div id="inputArea">
-  <button id="photoBtn" type="button" class="iconBtn" title="上传照片">📷</button>
-  <input id="photoInput" type="file" accept="image/*" style="display:none" />
-
-  <div id="pendingPhoto" style="display:none; align-items:center; gap:10px; padding:6px 8px; margin:6px 0; border-radius:10px; background: rgba(255,255,255,0.06);">
+  <div id="pendingPhoto" style="display:none; align-items:center; gap:10px; padding:6px 8px; margin:0 0 10px 0; border-radius:10px; background: rgba(255,255,255,0.06);">
     <img id="pendingPhotoImg" alt="preview" style="width:56px; height:56px; object-fit:cover; border-radius:10px;" />
     <div style="flex:1; font-size:12px; opacity:0.9;">
       已添加照片：在下面输入备注文字，然后点“发送”一起发出
@@ -806,8 +815,13 @@ transform: translateY(-4px);
     <button id="pendingPhotoRemove" type="button" class="iconBtn" title="移除">✖</button>
   </div>
 
-  <textarea id="input" rows="1" placeholder="输入消息...（Enter发送，Shift+Enter换行）"></textarea>
-  <button id="sendBtn" type="button">发送</button>
+  <div class="composerRow" id="composerRow">
+    <button id="photoBtn" type="button" class="iconBtn" title="上传照片">📷</button>
+    <input id="photoInput" type="file" accept="image/*" style="display:none" />
+
+    <textarea id="input" rows="1" placeholder="输入消息...（Enter发送，Shift+Enter换行）"></textarea>
+    <button id="sendBtn" type="button">发送</button>
+  </div>
 </div>
 
 <script>
@@ -1429,6 +1443,7 @@ async function send(){
         sendBtn.textContent = "发送";
         input.disabled = false;
         input.focus();
+        autoGrowTextarea();
         render();
         return;
     }
@@ -1449,6 +1464,7 @@ async function send(){
         sendBtn.classList.remove("loading");
         sendBtn.textContent = "发送";
         input.disabled = false;
+        autoGrowTextarea();
         return;
     }
     const modeAtSend = currentModelMode; // 锁定本次请求使用的模式，避免中途切换导致串模式
@@ -1462,6 +1478,7 @@ if(!hasPhoto && /^\/(img|图)\s+/i.test(text)){
     add("user", text);
     currentModelMode = prevModeCmd;
     input.value = "";
+    autoGrowTextarea();
 
     // 占位
     const prevMode2 = currentModelMode;
@@ -1529,6 +1546,7 @@ if(!hasPhoto && /^\/(img|图)\s+/i.test(text)){
 
       currentModelMode = prevMode;
       input.value = "";
+      autoGrowTextarea();
 
       try{
         if(statusText) statusText.textContent = "上传中…";
@@ -1567,6 +1585,7 @@ if(!hasPhoto && /^\/(img|图)\s+/i.test(text)){
       add("user",text);
       currentModelMode = prevMode;
       input.value = "";
+      autoGrowTextarea();
     }
 
     // “正在思考...”也归属本次锁定模式
@@ -1600,6 +1619,7 @@ if(!hasPhoto && /^\/(img|图)\s+/i.test(text)){
             sendBtn.textContent = "发送";
             input.disabled = false;
             input.focus();
+            autoGrowTextarea();
 
             // 清理流式目标（继续生成会在 continueGenerationFrom 里重新设置）
             streamTargetId = null;
@@ -1639,6 +1659,7 @@ if(last && last.role === "ai"){
 
     input.disabled = false;
     input.focus();
+    autoGrowTextarea();
 
     // 正常结束后不保留继续按钮
     if(!lastCallAborted){
