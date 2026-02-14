@@ -4,7 +4,7 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"/>
 <meta name="referrer" content="no-referrer" />
-<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data:; connect-src 'self' https: http://localhost:8787 http://127.0.0.1:8787; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';" />
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; base-uri 'self'; object-src 'none'; img-src 'self' data: https: blob:; connect-src 'self' https: http://localhost:8787 http://127.0.0.1:8787; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline';" />
 <title>益群的电子奴隶</title>
 
 <style>
@@ -795,8 +795,10 @@ transform: translateY(-4px);
 </div>
 
 <div id="inputArea">
-    <textarea id="input" rows="1" placeholder="输入消息...（Enter发送，Shift+Enter换行）"></textarea>
-    <button id="sendBtn" type="button">发送</button>
+  <button id="photoBtn" type="button" class="iconBtn" title="上传照片">📷</button>
+  <input id="photoInput" type="file" accept="image/*" style="display:none" />
+  <textarea id="input" rows="1" placeholder="输入消息...（Enter发送，Shift+Enter换行）"></textarea>
+  <button id="sendBtn" type="button">发送</button>
 </div>
 
 <script>
@@ -929,6 +931,8 @@ let lastStreamMode = null;        // 本次流式使用的 mode
 const chat = document.getElementById("chat");
 const input = document.getElementById("input");
 const sendBtn = document.getElementById("sendBtn");
+const photoBtn = document.getElementById("photoBtn");
+const photoInput = document.getElementById("photoInput");
 const statusDot = document.getElementById("statusDot");
 const statusText = document.getElementById("statusText");
 const sessionSearch = document.getElementById("sessionSearch");
@@ -1315,19 +1319,22 @@ if(m && m.role === "ai" && canContinue && continueTarget && continueTarget.msgId
 
     const content = document.createElement("div");
 
-// 图片消息优先渲染
-if(m && m.image && typeof m.image === "string"){
-  const src = String(m.image || "").trim();
-  if(!/^data:image\//i.test(src)){
+// 图片消息优先渲染（AI生成：m.image = data:image...；上传：m.imageUrl = https/blob/data）
+const hasAnyImage = (m && typeof m === "object" && ((typeof m.image === "string" && m.image.trim()) || (typeof m.imageUrl === "string" && m.imageUrl.trim())));
+if(hasAnyImage){
+  const src = String((m.imageUrl || m.image || "")).trim();
+  const allowed = /^data:image\//i.test(src) || /^https:\/\//i.test(src) || /^blob:/i.test(src);
+
+  if(!allowed){
     const warn = document.createElement("div");
     warn.className = "imgCaption";
-    warn.textContent = "（已拦截外链图片：仅允许 data:image/…）";
+    warn.textContent = "（图片链接不安全，已拦截）";
     content.appendChild(warn);
   }else{
     const img = document.createElement("img");
     img.className = "msgImg";
     img.src = src;
-    img.alt = "generated";
+    img.alt = "image";
     content.appendChild(img);
   }
 
@@ -1669,6 +1676,80 @@ input.addEventListener("keydown", (e)=>{
 });
 
 sendBtn.addEventListener("click", ()=> send());
+// ======= 上传照片（前端） =======
+async function uploadPhotoFile(file){
+  if(!file) return;
+
+  // 先在聊天里放一个“本地预览”气泡（即使后端没做好你也能看到预览）
+  const localPreview = URL.createObjectURL(file);
+  add("user", "（上传中…）", { imageUrl: localPreview });
+  const uploadingMsg = history[history.length - 1];
+
+  try{
+    // 1) 让后端签名（你后端下一步要实现这两个接口）
+    const r1 = await apiFetch(UPLOAD_SIGN_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, contentType: file.type || "image/jpeg" })
+    });
+    const j1 = await r1.json().catch(()=> ({}));
+    if(!r1.ok) throw new Error(j1.error || ("sign failed: " + r1.status));
+
+    // 2) PUT 直传到 Supabase signedUrl
+    const put = await fetch(j1.signedUrl, {
+      method: "PUT",
+      headers: { "Content-Type": file.type || "image/jpeg" },
+      body: file
+    });
+    if(!put.ok) throw new Error("upload failed: " + put.status);
+
+    // 3) 让后端给一个可访问的链接（private bucket 用 signed download url）
+    const r2 = await apiFetch(UPLOAD_URL_URL, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ path: j1.path })
+    });
+    const j2 = await r2.json().catch(()=> ({}));
+    if(!r2.ok) throw new Error(j2.error || ("url failed: " + r2.status));
+
+    // 4) 用真实链接替换本地预览
+    if(uploadingMsg){
+      uploadingMsg.imageUrl = String(j2.signedUrl || "").trim() || uploadingMsg.imageUrl;
+      uploadingMsg.text = ""; // 图片气泡不显示文字
+      syncCurrentToStorage();
+      render();
+    }
+  }catch(err){
+    if(uploadingMsg){
+      uploadingMsg.text = "图片上传失败：" + (err && err.message ? err.message : String(err));
+      syncCurrentToStorage();
+      render();
+    }
+  }
+}
+
+if(photoBtn && photoInput){
+  photoBtn.addEventListener("click", ()=>{
+    try{ photoInput.value = ""; }catch(e){}
+    photoInput.click();
+  });
+
+  photoInput.addEventListener("change", async ()=>{
+    const file = photoInput.files && photoInput.files[0];
+    if(!file) return;
+
+    if(!(file.type || "").startsWith("image/")){
+      alert("只允许上传图片");
+      return;
+    }
+    if(file.size > 10 * 1024 * 1024){
+      alert("图片太大了（最多10MB）");
+      return;
+    }
+
+    await uploadPhotoFile(file);
+  });
+}
 // ======= 图片弹窗事件 =======
 if(imageBtn){
   imageBtn.addEventListener("click", ()=> openImgModal());
@@ -1946,6 +2027,8 @@ const BACKEND_BASE = normalizeBase(
 const CHAT_URL  = BACKEND_BASE + "/api/chat";
 const PING_URL  = BACKEND_BASE + "/api/ping";
 const IMAGE_URL = BACKEND_BASE + "/api/image";
+const UPLOAD_SIGN_URL = BACKEND_BASE + "/api/upload/sign";
+const UPLOAD_URL_URL  = BACKEND_BASE + "/api/upload/url";
 // Always include cookies (sid) for ALL backend calls.
 function apiFetch(url, options){
   const opt = options ? { ...options } : {};
