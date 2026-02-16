@@ -741,22 +741,24 @@ async function callGrokStream(messages, res, grokModel = "grok-2-latest"){
   const body = r.body;
   if(!body) throw new Error("Grok 没有返回 body");
 
-  // ✅ Simulate fast “character-by-character” streaming when upstream returns full text only
+  // ✅ Make it look like real streaming (not a whole paragraph popping instantly)
+  // Tune by env on Render if you want: GROK_SIM_CHUNK / GROK_SIM_DELAY_MS
   const emitSimulatedStream = async (text) => {
     const s = String(text || "");
     if(!s) return;
 
-    // Split into small chunks for a smooth typing effect (fast)
-    const CHUNK = 1; // 1 = per character
+    // ✅ Make it look like real streaming (not a whole paragraph popping instantly)
+    // Tune by env on Render if you want: GROK_SIM_CHUNK / GROK_SIM_DELAY_MS
+    const CHUNK = Math.max(1, Number(process.env.GROK_SIM_CHUNK || 2));
+    const DELAY_MS = Math.max(0, Number(process.env.GROK_SIM_DELAY_MS || 12));
+
     for(let i = 0; i < s.length; i += CHUNK){
       const delta = s.slice(i, i + CHUNK);
       res.write(`data: ${JSON.stringify({ delta })}\n\n`);
       res.flush && res.flush();
 
-      // yield occasionally so the event loop can flush (keeps UI smooth)
-      if((i % 200) === 0){
-        await new Promise(r => setTimeout(r, 0));
-      }
+      // real delay so the UI shows incremental typing
+      if(DELAY_MS) await new Promise(r => setTimeout(r, DELAY_MS));
     }
   };
 
