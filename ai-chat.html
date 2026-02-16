@@ -854,7 +854,13 @@ try{
 }catch(e){ /* ignore */ }
 
 // ======= 线上默认关闭调试日志 =======
+
 const DEBUG = IS_LOCALHOST;
+
+// ======= Stream toggle（控制“吐字”效果） =======
+// true  = 后端 SSE 流式输出（一点点往外吐字）
+// false = 一次性返回（更稳，用于排查问题）
+const STREAM_ENABLED = true;
 
 // ======= 隐私模式：默认对外(线上)开启，避免把聊天历史落到 localStorage =======
 let privacyMode = (sessionStorage.getItem("privacyMode") === "1");
@@ -2438,7 +2444,7 @@ async function callAI(msg, modeLocked = currentModelMode){
   const payload = {
     history: normalizedHistory,
     mode: modeLocked,
-    stream: true,
+    stream: STREAM_ENABLED,
     privacy_mode: privacyMode,
     user_name: getUserName(),
     // 后端会二次校验；这里不做任何打印/显示，避免泄露
@@ -2483,101 +2489,106 @@ async function callAI(msg, modeLocked = currentModelMode){
   const ct = (r.headers.get("content-type") || "").toLowerCase();
 
 // ✅ 流式：边读边显示（兼容更多 SSE 格式）
-if(ct.includes("text/event-stream")){
+if(ct.includes("text/event-stream") && r.body){
   const reader = r.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  lastCallStreamed = true;
-  let buffer = "";
-  let full = "";
-  let gotAny = false;
+  try{
+    const decoder = new TextDecoder("utf-8");
+    lastCallStreamed = true;
+    let buffer = "";
+    let full = "";
+    let gotAny = false;
 
-  while(true){
+    while(true){
+      if(currentAbortController && currentAbortController.signal.aborted){
+        break;
+      }
+
+      let value, done;
+      try{
+        ({ value, done } = await reader.read());
+      }catch(e){
+        if(currentAbortController && currentAbortController.signal.aborted){
+          lastCallAborted = true;
+          break;
+        }
+        throw e;
+      }
+      if(done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE 每条事件用空行分隔（兼容 \r\n\r\n）
+      const parts = buffer.split(/\r?\n\r?\n/);
+      buffer = parts.pop() || "";
+
+      for(const part of parts){
+        const rawLines = part.split(/\r?\n/);
+        const lines = rawLines.map(s=>s.trim()).filter(Boolean);
+        if(!lines.length) continue;
+
+        // 忽略 SSE 注释行，如 :ok
+        if(lines.length === 1 && lines[0].startsWith(":")) continue;
+
+        const isDone = lines.some(l => l.startsWith("event:") && /done/i.test(l));
+        const isError = lines.some(l => l.startsWith("event:") && /error/i.test(l));
+
+        // 一个事件里可能有多行 data:
+        const dataLines = lines.filter(l => l.startsWith("data:"));
+        if(!dataLines.length){
+          if(isDone) continue;
+          // 没 data 的事件就跳过
+          continue;
+        }
+
+        const dataStr = dataLines.map(l => l.slice(5).trim()).join("\n");
+
+        // done 事件：结束但不丢最后的 data（有些实现会带 data: {})
+        if(isDone){
+          continue;
+        }
+
+        // 先尝试按 JSON 解析
+        let parsed = null;
+        try{ parsed = JSON.parse(dataStr); }catch(_e){ parsed = null; }
+
+        // 1) 标准：{delta:"..."}
+        if(parsed && typeof parsed.delta === "string" && parsed.delta.length){
+          gotAny = true;
+          full += parsed.delta;
+          appendDeltaToLastAI(parsed.delta);
+          continue;
+        }
+
+        // 2) 错误事件：{message:"..."}
+        if(isError && parsed && typeof parsed.message === "string" && parsed.message.length){
+          const msg = "[后端错误] " + parsed.message;
+          gotAny = true;
+          full += msg;
+          appendDeltaToLastAI(msg);
+          continue;
+        }
+
+        // 3) 兜底：把 data 当纯文本 delta（有些后端会直接 data: hello）
+        if(dataStr && String(dataStr).trim()){
+          const textDelta = String(dataStr);
+          gotAny = true;
+          full += textDelta;
+          appendDeltaToLastAI(textDelta);
+          continue;
+        }
+      }
+    }
+
     if(currentAbortController && currentAbortController.signal.aborted){
-      break;
+      lastCallAborted = true;
+      appendDeltaToLastAI("\n\n（已停止生成）");
     }
-
-    let value, done;
-try{
-  ({ value, done } = await reader.read());
-}catch(e){
-  if(currentAbortController && currentAbortController.signal.aborted){
-    lastCallAborted = true;
-    break;
+    syncCurrentToStorage();
+    return (gotAny && String(full).trim()) ? full : "(没有返回内容)";
+  } finally {
+    try{ await reader.cancel(); }catch(_e){}
+    try{ reader.releaseLock && reader.releaseLock(); }catch(_e){}
   }
-  throw e;
-}
-    if(done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-
-    // SSE 每条事件用空行分隔（兼容 \r\n\r\n）
-    const parts = buffer.split(/\r?\n\r?\n/);
-    buffer = parts.pop() || "";
-
-    for(const part of parts){
-      const rawLines = part.split(/\r?\n/);
-      const lines = rawLines.map(s=>s.trim()).filter(Boolean);
-      if(!lines.length) continue;
-
-      // 忽略 SSE 注释行，如 :ok
-      if(lines.length === 1 && lines[0].startsWith(":")) continue;
-
-      const isDone = lines.some(l => l.startsWith("event:") && /done/i.test(l));
-      const isError = lines.some(l => l.startsWith("event:") && /error/i.test(l));
-
-      // 一个事件里可能有多行 data:
-      const dataLines = lines.filter(l => l.startsWith("data:"));
-      if(!dataLines.length){
-        if(isDone) continue;
-        // 没 data 的事件就跳过
-        continue;
-      }
-
-      const dataStr = dataLines.map(l => l.slice(5).trim()).join("\n");
-
-      // done 事件：结束但不丢最后的 data（有些实现会带 data: {})
-      if(isDone){
-        continue;
-      }
-
-      // 先尝试按 JSON 解析
-      let parsed = null;
-      try{ parsed = JSON.parse(dataStr); }catch(_e){ parsed = null; }
-
-      // 1) 标准：{delta:"..."}
-      if(parsed && typeof parsed.delta === "string" && parsed.delta.length){
-        gotAny = true;
-        full += parsed.delta;
-        appendDeltaToLastAI(parsed.delta);
-        continue;
-      }
-
-      // 2) 错误事件：{message:"..."}
-      if(isError && parsed && typeof parsed.message === "string" && parsed.message.length){
-        const msg = "[后端错误] " + parsed.message;
-        gotAny = true;
-        full += msg;
-        appendDeltaToLastAI(msg);
-        continue;
-      }
-
-      // 3) 兜底：把 data 当纯文本 delta（有些后端会直接 data: hello）
-      if(dataStr && String(dataStr).trim()){
-        const textDelta = String(dataStr);
-        gotAny = true;
-        full += textDelta;
-        appendDeltaToLastAI(textDelta);
-        continue;
-      }
-    }
-  }
-
-  if(currentAbortController && currentAbortController.signal.aborted){
-  lastCallAborted = true;
-  appendDeltaToLastAI("\n\n（已停止生成）");
-}
-  syncCurrentToStorage();
-  return (gotAny && String(full).trim()) ? full : "(没有返回内容)";
 }
 
 // 非流式：保持原来 JSON
