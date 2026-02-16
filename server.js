@@ -1057,23 +1057,63 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     // ===== Normalize history (support text + imageUrl) =====
     const norm = [];
 
+    const getTextField = (m) => {
+      // Accept common frontend shapes: {text}, {content}, {message}
+      if (typeof m?.text === "string") return m.text;
+      if (typeof m?.content === "string") return m.content;
+      if (typeof m?.message === "string") return m.message;
+      // Some clients store assistant output as {content: [{type,text}...]}
+      if (Array.isArray(m?.content)) {
+        try {
+          return m.content
+            .map(x => (typeof x === "string" ? x : (x?.text || x?.value || "")))
+            .join("");
+        } catch (_e) {
+          return "";
+        }
+      }
+      return "";
+    };
+
+    const getImageField = (m) => {
+      // Accept common frontend shapes: {imageUrl}, {image_url}, {image}, {url}, {img}
+      if (typeof m?.imageUrl === "string") return m.imageUrl;
+      if (typeof m?.image_url === "string") return m.image_url;
+      if (typeof m?.image === "string") return m.image;
+      if (typeof m?.url === "string") return m.url;
+      if (typeof m?.img === "string") return m.img;
+      return "";
+    };
+
+    let droppedTooLongImageOnlyUser = false;
+
     for (const m of history) {
       if (!m || !m.role) continue;
 
       // SECURITY: do NOT accept client-provided system messages
       const role = (m.role === "user") ? "user" : "assistant";
 
-      const text = (typeof m.text === "string") ? m.text.trim() : "";
-      const imageUrl = (typeof m.imageUrl === "string") ? m.imageUrl.trim() : "";
+      const text = String(getTextField(m) || "").trim();
+      const imageUrl = String(getImageField(m) || "").trim();
 
       // Drop empty items
-      if(!text && !imageUrl) continue;
+      if (!text && !imageUrl) continue;
 
       // Basic size limits
-      if(text && text.length > 4000) continue;
-      if(imageUrl && imageUrl.length > 2000) continue;
+      const textOk = !text || text.length <= 4000;
+      const imgOk  = !imageUrl || imageUrl.length <= 2000;
 
-      norm.push({ role, text, imageUrl });
+      // If image URL is too long, drop it. If it's a user message with no text, remember why.
+      const finalText = textOk ? text : "";
+      const finalImageUrl = imgOk ? imageUrl : "";
+
+      if (role === "user" && !imgOk && !finalText) {
+        droppedTooLongImageOnlyUser = true;
+      }
+
+      if (!finalText && !finalImageUrl) continue;
+
+      norm.push({ role, text: finalText, imageUrl: finalImageUrl });
     }
 
     // Compute a conservative "size" for abuse prevention
@@ -1100,7 +1140,12 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     // 必须至少有一条 user（允许 image-only）
     const lastUserNorm = [...norm].reverse().find(x => x && x.role === "user" && (String(x.text || "").trim() || String(x.imageUrl || "").trim()));
-    if (!lastUserNorm) throw new Error("history 里没有有效的 user 消息");
+    if (!lastUserNorm) {
+      if (droppedTooLongImageOnlyUser) {
+        return res.status(400).json({ error: "IMAGE_URL_TOO_LONG", detail: "imageUrl 超过 2000 字符（常见于 base64/dataURL）。请只传 https 短链接（signedUrl），不要传 base64。" });
+      }
+      return res.status(400).json({ error: "NO_VALID_USER_MESSAGE", detail: "history 里没有有效的 user 消息（text 或 imageUrl 为空/被过滤）" });
+    }
 
     logEvent(req, "chat_user", { text: clipText(lastUserNorm.text || "[image]") });
 
