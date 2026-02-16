@@ -1104,13 +1104,34 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     logEvent(req, "chat_user", { text: clipText(lastUserNorm.text || "[image]") });
 
-    // Build provider-specific message format
+    // ✅ xAI 图像理解需要把 content 作为 blocks（input_image + input_text）
+    // 仅把图片 URL 拼进文本里（"[image] url"）不会让模型真正“看图”。
+    const toGrokContent = (x) => {
+      const role = String(x?.role || "").toLowerCase();
+      const t = String(x?.text || "").trim();
+      const u = String(x?.imageUrl || "").trim();
+
+      // assistant: keep plain text
+      if(role === "assistant") return t;
+
+      // user: if no image, plain text is fine
+      if(!u) return t;
+
+      // user + image: send multimodal blocks
+      const blocks = [];
+      blocks.push({ type: "input_image", image_url: u, detail: "auto" });
+      if(t) blocks.push({ type: "input_text", text: t });
+      else blocks.push({ type: "input_text", text: "请描述这张图片的内容。" });
+      return blocks;
+    };
+
+    // For logging / non-multimodal fallbacks
     const toGrokText = (x) => {
       const t = String(x.text || "").trim();
       const u = String(x.imageUrl || "").trim();
       if(!u) return t;
-      if(!t) return "[image] " + u;
-      return t + "\n[image] " + u;
+      if(!t) return "[image]";
+      return t + "\n[image]";
     };
 
     const toResponsesContent = (x) => {
@@ -1136,8 +1157,14 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     // Prepare both representations
     const inputForGrok = norm
-      .map(x => ({ role: x.role, content: toGrokText(x) }))
-      .filter(x => x && x.role && String(x.content || "").trim());
+      .map(x => ({ role: x.role, content: toGrokContent(x) }))
+      .filter(x => {
+        if(!x || !x.role) return false;
+        // content can be string or array (multimodal)
+        if(typeof x.content === "string") return String(x.content).trim().length > 0;
+        if(Array.isArray(x.content)) return x.content.length > 0;
+        return false;
+      });
 
     const inputForOpenAI = norm
       .map(x => ({ role: x.role, content: toResponsesContent(x) }))
@@ -1252,7 +1279,10 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     // ⭐ 无尽模式（Grok）
     if(modeKey === "infinity"){
-      let grokModel = (typeof model === "string" && model.startsWith("grok-")) ? model : "grok-2";
+      const hasImage = norm.some(m => m && m.role === "user" && String(m.imageUrl || "").trim());
+      // If images are present, prefer a vision-capable Grok model (configurable via env)
+      const GROK_VISION_MODEL = String(process.env.GROK_VISION_MODEL || "").trim();
+      let grokModel = (typeof model === "string" && model.startsWith("grok-")) ? model : (hasImage && GROK_VISION_MODEL ? GROK_VISION_MODEL : "grok-2");
       // Resolve aliases (best effort) and keep DB-visible model_used in sync
       try{
         const GROK_KEY = getGrokKey();
