@@ -741,6 +741,25 @@ async function callGrokStream(messages, res, grokModel = "grok-2-latest"){
   const body = r.body;
   if(!body) throw new Error("Grok 没有返回 body");
 
+  // ✅ Simulate fast “character-by-character” streaming when upstream returns full text only
+  const emitSimulatedStream = async (text) => {
+    const s = String(text || "");
+    if(!s) return;
+
+    // Split into small chunks for a smooth typing effect (fast)
+    const CHUNK = 1; // 1 = per character
+    for(let i = 0; i < s.length; i += CHUNK){
+      const delta = s.slice(i, i + CHUNK);
+      res.write(`data: ${JSON.stringify({ delta })}\n\n`);
+      res.flush && res.flush();
+
+      // yield occasionally so the event loop can flush (keeps UI smooth)
+      if((i % 200) === 0){
+        await new Promise(r => setTimeout(r, 0));
+      }
+    }
+  };
+
   try{
     let buffer = "";
     let streamedAny = false;
@@ -818,10 +837,9 @@ async function callGrokStream(messages, res, grokModel = "grok-2-latest"){
       try{
         const full = await callGrok(messages, grokModel);
         if(full && String(full).trim()){
-          res.write(`data: ${JSON.stringify({ delta: String(full) })}\n\n`);
-          res.flush && res.flush();
+          await emitSimulatedStream(full);
           streamedAny = true;
-          console.log("✅ Grok fallback full sent, len=", String(full).length, "model=", grokModel);
+          console.log("✅ Grok fallback simulated stream sent, len=", String(full).length, "model=", grokModel);
         }
       }catch(_e){
         // ignore fallback errors; outer catch will handle
@@ -840,9 +858,8 @@ async function callGrokStream(messages, res, grokModel = "grok-2-latest"){
       try{
         const full = await callGrok(messages, grokModel);
         if(full && String(full).trim()){
-          res.write(`data: ${JSON.stringify({ delta: String(full) })}\n\n`);
-          res.flush && res.flush();
-          console.log("✅ Grok abort-timeout fallback full sent, len=", String(full).length, "model=", grokModel);
+          await emitSimulatedStream(full);
+          console.log("✅ Grok abort-timeout fallback simulated stream sent, len=", String(full).length, "model=", grokModel);
         }else{
           res.write(`data: ${JSON.stringify({ delta: "[Grok] 空返回（可能无权限/额度/上游异常）" })}\n\n`);
         }
