@@ -1104,8 +1104,10 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     logEvent(req, "chat_user", { text: clipText(lastUserNorm.text || "[image]") });
 
-    // ✅ xAI 图像理解需要把 content 作为 blocks（input_image + input_text）
-    // 仅把图片 URL 拼进文本里（"[image] url"）不会让模型真正“看图”。
+    // ✅ xAI Chat Completions (legacy) image understanding uses OpenAI-compatible blocks:
+    //   - {type:"image_url", image_url:{url:"...", detail:"high"|"low"|"auto"}}
+    //   - {type:"text", text:"..."}
+    // NOTE: `input_image/input_text` is for the newer style APIs; legacy chat/completions will 422.
     const toGrokContent = (x) => {
       const role = String(x?.role || "").toLowerCase();
       const t = String(x?.text || "").trim();
@@ -1117,11 +1119,22 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       // user: if no image, plain text is fine
       if(!u) return t;
 
-      // user + image: send multimodal blocks
+      // user + image: send multimodal blocks in legacy format
       const blocks = [];
-      blocks.push({ type: "input_image", image_url: u, detail: "auto" });
-      if(t) blocks.push({ type: "input_text", text: t });
-      else blocks.push({ type: "input_text", text: "请描述这张图片的内容。" });
+      blocks.push({
+        type: "image_url",
+        image_url: {
+          url: u,
+          detail: "auto"
+        }
+      });
+
+      // Always include a text block; some providers fail if only image is provided.
+      blocks.push({
+        type: "text",
+        text: t || "请描述这张图片的内容。"
+      });
+
       return blocks;
     };
 
