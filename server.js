@@ -1280,14 +1280,33 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     // ⭐ 无尽模式（Grok）
     if(modeKey === "infinity"){
       const hasImage = norm.some(m => m && m.role === "user" && String(m.imageUrl || "").trim());
-      // If images are present, prefer a vision-capable Grok model (configurable via env)
-      const GROK_VISION_MODEL = String(process.env.GROK_VISION_MODEL || "").trim();
-      let grokModel = (typeof model === "string" && model.startsWith("grok-")) ? model : (hasImage && GROK_VISION_MODEL ? GROK_VISION_MODEL : "grok-2");
-      // Resolve aliases (best effort) and keep DB-visible model_used in sync
+
+      // If images are present, we MUST use an image-capable model.
+      // If GROK_VISION_MODEL is not set, default to the model used in xAI docs examples.
+      const GROK_VISION_MODEL = String(process.env.GROK_VISION_MODEL || "grok-4-1-fast-reasoning").trim();
+
+      let grokModel = (typeof model === "string" && model.startsWith("grok-"))
+        ? model
+        : (hasImage ? GROK_VISION_MODEL : "grok-2");
+
+      // Resolve aliases (best effort). IMPORTANT: when images are present,
+      // do NOT fall back to a random text-only model (it will 422 on multimodal content).
       try{
         const GROK_KEY = getGrokKey();
         if(GROK_KEY){
-          grokModel = await resolveXaiModel(grokModel, GROK_KEY);
+          if(hasImage){
+            const ids = await fetchXaiModelIds(GROK_KEY);
+            // Prefer exact match if available; otherwise keep the requested vision model string as-is.
+            if(Array.isArray(ids) && ids.includes(grokModel)){
+              // ok
+            }else{
+              // Try a reasonable vision-capable fallback if the env/model is not in the list
+              const v = (Array.isArray(ids) ? ids.find(x => String(x).toLowerCase().includes("grok-4") && looksLikeChatModel(x)) : "");
+              if(v) grokModel = v;
+            }
+          }else{
+            grokModel = await resolveXaiModel(grokModel, GROK_KEY);
+          }
         }
       }catch(_e){
         // ignore resolve errors
