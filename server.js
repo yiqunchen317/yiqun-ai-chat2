@@ -8,6 +8,21 @@ import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
 import { createClient } from '@supabase/supabase-js';
+import jwt from "jsonwebtoken";
+
+// ===== Supabase Auth user extractor =====
+function getUserIdFromReq(req){
+  try{
+    const auth = req.headers.authorization || "";
+    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
+    if(!token) return null;
+
+    const decoded = jwt.decode(token);
+    return decoded?.sub || null;
+  }catch(e){
+    return null;
+  }
+}
 const grokHttpsAgent = new https.Agent({ keepAlive: true });
 
 console.log("🚀 Loaded server.js at", new Date().toISOString());
@@ -1017,6 +1032,7 @@ app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX),
 app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX), async (req, res) => {
   try {
     const ip = getClientIp(req);
+    const userId = getUserIdFromReq(req);
     const sid = shortSid(req);
     const { history, mode, model, stream, tianqing_key } = req.body || {};
     const sender = getSenderFromReq(req);
@@ -1220,6 +1236,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
         tianqing_unlocked: (String(modeKey || "").trim() === "tianqing") ? verifyTianqingKey(req) : null,
         sender: sender,
         user_agent: ua,
+        user_id: userId,
       };
 
       const { data: d1, error: e1 } = await supabase
@@ -1247,6 +1264,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
             sid: sid || null,
             sender: sender,
             user_agent: ua,
+            user_id: userId,
           };
           // If PostgREST says a column is missing, strip it and retry.
           for(const c of missingCols){
@@ -1444,6 +1462,31 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     const status = e?.status || 500;
     return res.status(status).send(e?.message || "server error");
+  }
+});
+
+
+// ======= Chat History (per user) =======
+app.get("/api/chat/history", requireActivatedOrApiKey, async (req, res) => {
+  try{
+    const userId = getUserIdFromReq(req);
+    if(!userId) return res.json({ items: [] });
+
+    const { data, error } = await supabase
+      .from("chat_logs")
+      .select("id, user_text, created_at, mode_label, provider, model_used")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: true })
+      .limit(200);
+
+    if(error){
+      console.log("[history error]", error.message);
+      return res.status(500).json({ error: error.message });
+    }
+
+    return res.json({ items: data || [] });
+  }catch(e){
+    return res.status(500).json({ error: e?.message || "history error" });
   }
 });
 
