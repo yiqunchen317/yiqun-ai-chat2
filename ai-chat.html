@@ -143,6 +143,53 @@ header{
   cursor:pointer;
 }
 
+/* ======= 登录弹窗 ======= */
+#authModal{
+  position:fixed;
+  inset:0;
+  display:none;
+  align-items:center;
+  justify-content:center;
+  z-index:140;
+}
+#authModal.show{ display:flex; }
+#authModal .backdrop{
+  position:absolute;
+  inset:0;
+  background:rgba(0,0,0,0.55);
+}
+#authModal .panel{
+  position:relative;
+  width:min(440px, calc(100vw - 32px));
+  background:rgba(15,23,42,0.96);
+  border:1px solid rgba(255,255,255,0.10);
+  border-radius:16px;
+  backdrop-filter:blur(14px);
+  -webkit-backdrop-filter:blur(14px);
+  box-shadow:0 22px 60px rgba(0,0,0,0.45);
+  padding:16px;
+}
+#authModal .panel h3{ margin:0 0 10px; font-size:16px; }
+#authModal .muted{ margin-top:8px; font-size:12px; color:#94a3b8; line-height:1.35; }
+#authModal .fieldLabel{ margin-top:10px; font-size:13px; color:#cbd5e1; }
+#authModal input{
+  width:100%;
+  padding:12px 14px;
+  font-size:16px;
+  border:1px solid rgba(255,255,255,0.10);
+  border-radius:14px;
+  outline:none;
+  background:rgba(2,6,23,0.62);
+  color:white;
+}
+#authModal input::placeholder{ color:#64748b; }
+#authModal .row{ display:flex; gap:10px; justify-content:flex-end; margin-top:12px; flex-wrap:wrap; }
+#authModal .row .chipBtn{ margin-left:0; }
+#authModal .switchRow{ display:flex; align-items:center; justify-content:space-between; gap:10px; margin-top:10px; }
+#authModal .tinyLink{ font-size:12px; color:#93c5fd; cursor:pointer; user-select:none; }
+#authModal .tinyLink:hover{ text-decoration:underline; text-underline-offset:3px; }
+#authModal .status{ margin-top:10px; font-size:12px; color:#e2e8f0; opacity:0.9; min-height:18px; white-space:pre-line; }
+
 .headerActions{
     display:flex;
     align-items:center;
@@ -756,6 +803,7 @@ transform: translateY(-4px);
     <button class="chipBtn" id="modelBtn" title="模型选择" type="button">模型</button>
     <button class="iconBtn" id="unlockBtn" title="搜索/输入密钥解锁天晴" type="button">🔍</button>
 <button class="chipBtn" id="imageBtn" title="生成图片" type="button">🖼 图片</button>
+<button class="chipBtn" id="authBtn" title="登录/退出" type="button">登录</button>
 <button class="chipBtn" id="privacyBtn" title="隐私模式：不保存聊天历史" type="button">隐私：关</button>
 <button class="chipBtn" id="newChatBtn" title="新聊天" type="button">＋ 新聊天</button>
 <button class="chipBtn danger" id="clearBtn" title="清空当前" type="button">清空</button>
@@ -800,6 +848,33 @@ transform: translateY(-4px);
       <button class="chipBtn danger" id="nameCancelBtn" type="button">取消</button>
       <button class="chipBtn" id="nameSaveBtn" type="button">保存</button>
     </div>
+  </div>
+</div>
+<!-- ======= 账号登录弹窗（邮箱+密码，走 Supabase Auth；后端不接触密码） ======= -->
+<div id="authModal">
+  <div class="backdrop" id="authModalBackdrop"></div>
+  <div class="panel">
+    <h3 id="authTitle">登录</h3>
+
+    <div class="fieldLabel">邮箱</div>
+    <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" />
+
+    <div class="fieldLabel">密码</div>
+    <input id="authPassword" type="password" placeholder="输入密码（至少6位）" autocomplete="current-password" />
+
+    <div class="switchRow">
+      <div class="muted" id="authHint">没有账号？点右边注册</div>
+      <div class="tinyLink" id="authSwitch">注册</div>
+    </div>
+
+    <div class="status" id="authStatus"></div>
+
+    <div class="row">
+      <button class="chipBtn danger" id="authCancelBtn" type="button">取消</button>
+      <button class="chipBtn" id="authSubmitBtn" type="button">登录</button>
+    </div>
+
+    <div class="muted">提示：登录后你换名字、换设备，都能按同一个账号自动归档聊天记录。</div>
   </div>
 </div>
 
@@ -1010,6 +1085,154 @@ const nameInput = document.getElementById("nameInput");
 const nameColor = document.getElementById("nameColor");
 const nameSaveBtn = document.getElementById("nameSaveBtn");
 const nameCancelBtn = document.getElementById("nameCancelBtn");
+
+const authBtn = document.getElementById("authBtn");
+const authModal = document.getElementById("authModal");
+const authModalBackdrop = document.getElementById("authModalBackdrop");
+const authEmail = document.getElementById("authEmail");
+const authPassword = document.getElementById("authPassword");
+const authSubmitBtn = document.getElementById("authSubmitBtn");
+const authCancelBtn = document.getElementById("authCancelBtn");
+const authSwitch = document.getElementById("authSwitch");
+const authTitle = document.getElementById("authTitle");
+const authHint = document.getElementById("authHint");
+const authStatus = document.getElementById("authStatus");
+
+let isRegisterMode = false;
+
+function openAuthModal(){
+  if(!authModal) return;
+  authModal.classList.add("show");
+  setTimeout(()=>{ try{ authEmail && authEmail.focus(); }catch(e){} }, 60);
+}
+
+function closeAuthModal(){
+  if(!authModal) return;
+  authModal.classList.remove("show");
+}
+
+// ===== 云聊天记录加载 =====
+async function loadCloudHistory(){
+  try{
+    const res = await fetch(BACKEND_BASE + "/api/chat/history", {
+      method: "GET",
+      credentials: "include"
+    });
+
+    const data = await res.json();
+    if(!data || !Array.isArray(data.items)) return;
+
+    // 清空当前 UI
+    messages = [];
+    chat.innerHTML = "";
+
+    for(const item of data.items){
+      if(!item || !item.user_text) continue;
+
+      appendMessage("user", item.user_text);
+      appendMessage("assistant", "（历史记录）");
+    }
+
+    console.log("✅ 云聊天加载完成:", data.items.length);
+
+  }catch(e){
+    console.log("⚠️ 云聊天加载失败:", e.message);
+  }
+}
+
+// 页面加载后自动恢复聊天
+window.addEventListener("load", ()=>{
+  setTimeout(loadCloudHistory, 300);
+});
+
+function updateAuthUI(){
+  const token = getAccessToken();
+  if(authBtn) authBtn.textContent = token ? "退出" : "登录";
+}
+
+if(authBtn){
+  authBtn.addEventListener("click", ()=>{
+    const token = getAccessToken();
+    if(token){
+      setAccessToken("");
+      setRefreshToken("");
+      setSavedEmail("");
+      updateAuthUI();
+      alert("已退出登录");
+      return;
+    }
+    openAuthModal();
+  });
+}
+
+if(authModalBackdrop){
+  authModalBackdrop.addEventListener("click", ()=> closeAuthModal());
+}
+if(authCancelBtn){
+  authCancelBtn.addEventListener("click", ()=> closeAuthModal());
+}
+
+if(authSwitch){
+  authSwitch.addEventListener("click", ()=>{
+    isRegisterMode = !isRegisterMode;
+    if(isRegisterMode){
+      authTitle.textContent = "注册";
+      authSubmitBtn.textContent = "注册";
+      authHint.textContent = "已有账号？点右边登录";
+      authSwitch.textContent = "登录";
+    }else{
+      authTitle.textContent = "登录";
+      authSubmitBtn.textContent = "登录";
+      authHint.textContent = "没有账号？点右边注册";
+      authSwitch.textContent = "注册";
+    }
+  });
+}
+
+if(authSubmitBtn){
+  authSubmitBtn.addEventListener("click", async ()=>{
+    const email = String(authEmail.value || "").trim();
+    const password = String(authPassword.value || "").trim();
+
+    if(!email || !password){
+      authStatus.textContent = "请输入邮箱和密码";
+      return;
+    }
+
+    try{
+      authStatus.textContent = "处理中…";
+      let data;
+
+      if(isRegisterMode){
+        data = await supabaseSignUp(email, password);
+        authStatus.textContent = "注册成功，请登录";
+        isRegisterMode = false;
+        authTitle.textContent = "登录";
+        authSubmitBtn.textContent = "登录";
+        authSwitch.textContent = "注册";
+        return;
+      }else{
+        data = await supabaseSignInWithPassword(email, password);
+      }
+
+      if(data && data.access_token){
+        setAccessToken(data.access_token);
+        if(data.refresh_token) setRefreshToken(data.refresh_token);
+        setSavedEmail(email);
+        authStatus.textContent = "登录成功";
+        updateAuthUI();
+        setTimeout(()=> closeAuthModal(), 600);
+      }else{
+        throw new Error("未获取 token");
+      }
+
+    }catch(err){
+      authStatus.textContent = "失败：" + (err.message || err);
+    }
+  });
+}
+
+updateAuthUI();
 
 function getCurrentSession(){
     if(!currentSessionId) return null;
@@ -2149,7 +2372,87 @@ function openImgModal(){
 // - 这里保留一个“管理员调试门禁”的兼容入口：只有 URL 带 ?admin=1 才会询问 API_KEY。
 //   等你后端改成“邀请码/会话 cookie”后，这个 admin 门禁可以再删掉。
 
+
 const API_KEY_STORAGE = "yiqun_api_key";
+
+// ======= Supabase Auth（邮箱+密码登录：前端直连 Supabase；后端不接触密码） =======
+// TODO: 你自己把下面两项换成你的 Supabase 项目配置：
+// - SUPABASE_URL: 形如 https://xxxx.supabase.co
+// - SUPABASE_ANON_KEY: Supabase -> Project Settings -> API -> anon public
+const SUPABASE_URL = "https://pnqmcqnvxoenuwukutiq.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_4MmaSjGmBTAwRcAUJjZQgQ_NTQx8XUr";
+
+const AUTH_TOKEN_KEY = "yq_auth_access_token";
+const AUTH_REFRESH_KEY = "yq_auth_refresh_token";
+const AUTH_EMAIL_KEY = "yq_auth_email";
+
+function hasSupabaseConfig(){
+  return !!(String(SUPABASE_URL||"").trim() && String(SUPABASE_ANON_KEY||"").trim());
+}
+function getAccessToken(){
+  try{ return String(localStorage.getItem(AUTH_TOKEN_KEY) || "").trim(); }catch(e){ return ""; }
+}
+function setAccessToken(t){
+  try{ if(t) localStorage.setItem(AUTH_TOKEN_KEY, String(t)); else localStorage.removeItem(AUTH_TOKEN_KEY); }catch(e){}
+}
+function getRefreshToken(){
+  try{ return String(localStorage.getItem(AUTH_REFRESH_KEY) || "").trim(); }catch(e){ return ""; }
+}
+function setRefreshToken(t){
+  try{ if(t) localStorage.setItem(AUTH_REFRESH_KEY, String(t)); else localStorage.removeItem(AUTH_REFRESH_KEY); }catch(e){}
+}
+function getSavedEmail(){
+  try{ return String(localStorage.getItem(AUTH_EMAIL_KEY) || "").trim(); }catch(e){ return ""; }
+}
+function setSavedEmail(e){
+  try{ if(e) localStorage.setItem(AUTH_EMAIL_KEY, String(e)); else localStorage.removeItem(AUTH_EMAIL_KEY); }catch(_e){}
+}
+
+async function supabaseAuthRequest(path, bodyObj){
+  if(!hasSupabaseConfig()) throw new Error("还没配置 SUPABASE_URL / SUPABASE_ANON_KEY");
+  const base = String(SUPABASE_URL).replace(/\/+$/,"");
+  const url = base + path;
+
+  const r = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "apikey": SUPABASE_ANON_KEY,
+      "Authorization": "Bearer " + SUPABASE_ANON_KEY,
+    },
+    body: JSON.stringify(bodyObj || {}),
+  });
+
+  const j = await r.json().catch(()=> ({}));
+  if(!r.ok){
+    const msg = (j && (j.msg || j.message || j.error_description || j.error))
+      ? String(j.msg || j.message || j.error_description || j.error)
+      : ("auth failed: " + r.status);
+    throw new Error(msg);
+  }
+  return j;
+}
+
+async function supabaseSignInWithPassword(email, password){
+  return await supabaseAuthRequest("/auth/v1/token?grant_type=password", { email, password });
+}
+async function supabaseSignUp(email, password){
+  return await supabaseAuthRequest("/auth/v1/signup", { email, password });
+}
+
+function isJwtLikelyExpired(token){
+  try{
+    const parts = String(token||"").split(".");
+    if(parts.length !== 3) return true;
+    const payload = JSON.parse(atob(parts[1].replace(/-/g,"+").replace(/_/g,"/")));
+    const exp = payload && payload.exp ? Number(payload.exp) : 0;
+    if(!exp) return false;
+    const now = Math.floor(Date.now()/1000);
+    return now >= (exp - 20);
+  }catch(e){
+    return true;
+  }
+}
 
 function getApiKey(){
   return String(sessionStorage.getItem(API_KEY_STORAGE) || "").trim();
@@ -2176,8 +2479,15 @@ function ensureAdminApiKeyIfNeeded(){
 
 function authHeaders(){
   const h = { "Content-Type": "application/json" };
+
+  // 1) 如果已登录（Supabase），把 Bearer token 带给后端
+  const t = getAccessToken();
+  if(t) h["Authorization"] = "Bearer " + t;
+
+  // 2) 可选：本机管理员调试门禁（localhost + ?admin=1）
   const k = ensureAdminApiKeyIfNeeded();
   if(k) h["X-API-Key"] = k;
+
   return h;
 }
 
