@@ -2791,6 +2791,9 @@ async function callAI(msg, modeLocked = currentModelMode){
 
   const headers = authHeaders();
   if(tKey) headers["X-Tianqing-Key"] = tKey;
+  // ===== 插入创作者模式密钥到 headers =====
+  const cKey = (modeLocked === "creator") ? getCreatorKey() : "";
+  if(cKey) headers["X-Creator-Key"] = cKey;
 
   const r = await apiFetch(CHAT_URL, {
     method: "POST",
