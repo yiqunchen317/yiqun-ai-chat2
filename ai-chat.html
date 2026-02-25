@@ -2300,18 +2300,21 @@ modelItems.forEach(item=>{
 // ======= 解锁按钮：输入密钥后显示“天晴小宝贝”模式/创作者模式 =======
 if(unlockBtn){
   unlockBtn.addEventListener("click", ()=>{
-    const choice = prompt("输入密钥类型：\n1 = 天晴模式\n2 = 创作者模式") || "";
-    if(choice === "1"){
-      const k = String(prompt("输入天晴密钥：") || "").trim();
-      if(k) setTianqingKey(k);
+    const first = String(prompt("请输入密钥（天晴直接输入；创作者请输入 2）") || "").trim();
+    if(!first) return;
+
+    // ===== 天晴：直接输入密钥 =====
+    if(first !== "2"){
+      setTianqingKey(first);
       alert("天晴模式已解锁");
       return;
     }
-    if(choice === "2"){
-      const k = String(prompt("输入创作者密钥：") || "").trim();
-      if(k) setCreatorKey(k);
+
+    // ===== 创作者：先输入2，再输入密钥 =====
+    const creatorKey = String(prompt("输入创作者密钥：") || "").trim();
+    if(creatorKey){
+      setCreatorKey(creatorKey);
       alert("创作者模式已解锁");
-      return;
     }
   });
 }
