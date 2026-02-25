@@ -2300,7 +2300,7 @@ modelItems.forEach(item=>{
 // ======= 解锁按钮：输入密钥后显示“天晴小宝贝”模式/创作者模式 =======
 if(unlockBtn){
   unlockBtn.addEventListener("click", ()=>{
-    const first = String(prompt("请输入密钥（天晴直接输入；创作者请输入 2）") || "").trim();
+    const first = String(prompt("请输入密钥") || "").trim();
     if(!first) return;
 
     // ===== 天晴：直接输入密钥 =====
