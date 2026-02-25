@@ -1122,15 +1122,19 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     // If client explicitly passes `model`, respect it; otherwise we pick by mode.
     // NOTE: For Grok we may resolve aliases later; we will save the resolved value when possible.
-    const isInfinity = String(modeKey).trim().toLowerCase() === "infinity";
+    const mLower = String(modeKey).trim().toLowerCase();
+    const isInfinity = mLower === "infinity";
+    const isCreator = mLower === "creator";
 
-    let providerUsed = isInfinity ? "grok" : "openai";
+    // Creator mode now uses Grok by default (strongest Grok model)
+    let providerUsed = (isInfinity || isCreator) ? "grok" : "openai";
     let modelUsed = "";
 
     // Pre-compute a candidate model id so we can store it in Supabase per message.
     // (This does not call the provider yet.)
-    if(isInfinity){
-      modelUsed = (typeof model === "string" && model.startsWith("grok-")) ? model : "grok-2";
+    if(isInfinity || isCreator){
+      // Default strongest Grok chat model (can be overridden by client)
+      modelUsed = (typeof model === "string" && model.startsWith("grok-")) ? model : "grok-4";
     }else{
       modelUsed = (typeof model === "string" && model.trim()) ? model.trim() : pickGptModelByMode(modeKey);
     }
@@ -1391,8 +1395,8 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       ...inputForOpenAI
     ];
 
-    // ⭐ 无尽模式（Grok）
-    if(modeKey === "infinity"){
+    // ⭐ 无尽模式 + 创作者模式（Grok）
+    if(modeKey === "infinity" || modeKey === "creator"){
       const hasImage = norm.some(m => m && m.role === "user" && String(m.imageUrl || "").trim());
 
       // If images are present, we MUST use an image-capable model.
@@ -1401,7 +1405,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
       let grokModel = (typeof model === "string" && model.startsWith("grok-"))
         ? model
-        : (hasImage ? GROK_VISION_MODEL : "grok-2");
+        : (hasImage ? GROK_VISION_MODEL : "grok-4");
 
       // Resolve aliases (best effort). IMPORTANT: when images are present,
       // do NOT fall back to a random text-only model (it will 422 on multimodal content).
