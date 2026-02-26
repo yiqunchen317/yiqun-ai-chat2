@@ -968,7 +968,7 @@ app.get("/api/ping", (req, res) => {
 
 app.post("/api/upload/sign", requireActivatedOrApiKey, rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
   try{
-    const { filename, contentType } = req.body || {};
+    const { filename, contentType, bucket } = req.body || {};
     const fn = String(filename || "").trim();
     const ct = String(contentType || "").trim();
 
@@ -981,18 +981,19 @@ app.post("/api/upload/sign", requireActivatedOrApiKey, rateLimit("upload", RATE_
 
     // create unique path
     const id = crypto.randomBytes(16).toString("hex");
+    const targetBucket = String(bucket || SUPABASE_BUCKET).trim() || SUPABASE_BUCKET;
     const objectPath = `photos/${Date.now()}_${id}.${ext}`;
 
     const { data, error } = await supabase
       .storage
-      .from(SUPABASE_BUCKET)
+      .from(targetBucket)
       .createSignedUploadUrl(objectPath);
 
     if(error) return res.status(500).json({ error: error.message || "createSignedUploadUrl failed" });
 
     // data: { signedUrl, path, token }
     return res.json({
-      bucket: SUPABASE_BUCKET,
+      bucket: targetBucket,
       path: data.path || objectPath,
       signedUrl: data.signedUrl,
       token: data.token
