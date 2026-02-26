@@ -2736,6 +2736,23 @@ async function checkBackend(){
     }
   }, {passive:false});
 })();
+// ======= Native Android 回调：自动接收上传后的 Supabase URL =======
+// Android 会调用：window.__yiqun_native_cb(url)
+window.__yiqun_native_cb = function(url){
+  try{
+    if(!url) return;
+
+    // 直接当成用户发送了一张图片
+    const prevMode = currentModelMode;
+    add("user", "", { imageUrl: url });
+    currentModelMode = prevMode;
+
+    console.log("[native] image synced:", url);
+  }catch(e){
+    console.log("[native] callback error:", e);
+  }
+};
+
 // ======= 页面初始化：每次打开都自动开始一个新聊天 =======
 // 旧聊天只在左侧历史里，不会出现在当前页面
 createNewSession();
