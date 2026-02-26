@@ -966,7 +966,7 @@ app.get("/api/ping", (req, res) => {
 // 2) PUT file to signedUrl  (direct to Supabase)
 // 3) POST /api/upload/url   -> returns a short-lived signed download url
 
-app.post("/api/upload/sign", requireActivatedOrApiKey, rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
+app.post("/api/upload/sign", rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
   try{
     const { filename, contentType, bucket } = req.body || {};
     const fn = String(filename || "").trim();
@@ -1004,7 +1004,7 @@ app.post("/api/upload/sign", requireActivatedOrApiKey, rateLimit("upload", RATE_
   }
 });
 
-app.post("/api/upload/url", requireActivatedOrApiKey, rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
+app.post("/api/upload/url", rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
   try{
     const { path: p } = req.body || {};
     const objectPath = String(p || "").trim();
