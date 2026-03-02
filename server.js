@@ -1158,6 +1158,23 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
       }
     }
 
+    // ===== validate_only：只验证密钥/可用性，不写库、不调用模型（给前端“解锁校验”用） =====
+    const validateOnly = !!(
+      req.body?.validate_only === true ||
+      req.body?.validate_only === 1 ||
+      req.body?.validate_only === "1" ||
+      String(req.body?.validate_only || "").toLowerCase() === "true"
+    );
+
+    if(validateOnly){
+      logEvent(req, "chat_validate_only_ok", {
+        mode: safeStr(mode),
+        has_tianqing_key: !!getTianqingKeyFromReq(req),
+        has_creator_key: !!getCreatorKeyFromReq(req)
+      });
+      return res.json({ ok: true });
+    }
+
     // ===== Normalize history (support text + imageUrl) =====
     const norm = [];
 
