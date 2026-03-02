@@ -2298,24 +2298,89 @@ modelItems.forEach(item=>{
     });
 });
 // ======= 解锁按钮：输入密钥后显示“天晴小宝贝”模式/创作者模式 =======
-if(unlockBtn){
-  unlockBtn.addEventListener("click", ()=>{
-    const first = String(prompt("请输入密钥") || "").trim();
-    if(!first) return;
+// 目标：输入错误 -> 明确提示“密钥错误”，不解锁；输入正确 -> 才持久化解锁。
+async function validateTianqingKey(key){
+  const k = String(key || "").trim();
+  if(!k) return { ok:false, msg:"密钥不能为空" };
 
-    // ===== 天晴：直接输入密钥 =====
-    if(first !== "2"){
-      setTianqingKey(first);
-      alert("天晴模式已解锁");
+  // 通过一次最轻量的后端校验来判断密钥是否正确。
+  // 约定：后端应在真正调用模型前先校验密钥；错误密钥会快速返回 401/403。
+  try{
+    const h = authHeaders();
+    h["X-Tianqing-Key"] = k;
+
+    const payload = {
+      history: [{ role: "user", text: "ping" }],
+      mode: "tianqing",
+      stream: false,
+      validate_only: true,
+      privacy_mode: true,
+      user_name: getUserName(),
+      tianqing_key: k
+    };
+
+    const r = await apiFetch(CHAT_URL, {
+      method: "POST",
+      headers: h,
+      body: JSON.stringify(payload)
+    });
+
+    if(r.ok) return { ok:true, msg:"ok" };
+
+    // 尝试解析更友好的错误
+    let t = "";
+    try{ t = await r.text(); }catch(e){ t = ""; }
+    const code = r.status;
+    // 常见：401/403 视为密钥错误
+    if(code === 401 || code === 403){
+      return { ok:false, msg:"密钥错误，请重新输入" };
+    }
+    return { ok:false, msg:`验证失败（${code}）${t ? ("：" + t) : ""}` };
+
+  }catch(e){
+    return { ok:false, msg:"网络异常/后端离线，暂时无法验证" };
+  }
+}
+
+if(unlockBtn){
+  unlockBtn.addEventListener("click", async ()=>{
+    // 防抖：避免重复点
+    try{ unlockBtn.disabled = true; }catch(e){}
+
+    const first = String(prompt("请输入密钥") || "").trim();
+    if(!first){
+      try{ unlockBtn.disabled = false; }catch(e){}
       return;
     }
 
-    // ===== 创作者：先输入2，再输入密钥 =====
+    // ===== 天晴：直接输入密钥（必须先验证，正确才解锁） =====
+    if(first !== "2"){
+      if(statusText) statusText.textContent = "验证天晴密钥…";
+
+      const v = await validateTianqingKey(first);
+      if(v && v.ok){
+        setTianqingKey(first);
+        if(statusText) statusText.textContent = "在线";
+        alert("天晴模式已解锁");
+      }else{
+        // 不保存、不解锁
+        setTianqingKey("");
+        updateTianqingVisibility();
+        alert((v && v.msg) ? v.msg : "密钥错误，请重新输入");
+      }
+
+      try{ unlockBtn.disabled = false; }catch(e){}
+      return;
+    }
+
+    // ===== 创作者：先输入2，再输入密钥（保持原逻辑：只保存，不在此处校验） =====
     const creatorKey = String(prompt("输入创作者密钥：") || "").trim();
     if(creatorKey){
       setCreatorKey(creatorKey);
       alert("创作者模式已解锁");
     }
+
+    try{ unlockBtn.disabled = false; }catch(e){}
   });
 }
 
