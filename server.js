@@ -1832,6 +1832,17 @@ wss.on("connection", (clientWs, req) => {
       return;
     }
 
+    // Frontend 本地检测到一句话结束后，主动 commit，避免只 append 音频但模型一直不回。
+    if(type === "input_audio_buffer.commit"){
+      ensureUpstream();
+      if(audioTurnPending){
+        audioTurnPending = false;
+        wsSend(upstream, { type: "input_audio_buffer.commit" });
+        wsSend(upstream, { type: "response.create" });
+      }
+      return;
+    }
+
     // Optional: send text to upstream (for testing / hybrid control)
     if(type === "input_text" && typeof msg.text === "string"){
       ensureUpstream();
