@@ -10,6 +10,9 @@ import crypto from "crypto";
 import { createClient } from '@supabase/supabase-js';
 import jwt from "jsonwebtoken";
 
+import http from "http";
+import WebSocket, { WebSocketServer } from "ws";
+
 // ===== Supabase Auth user extractor =====
 function getUserIdFromReq(req){
   try{
@@ -588,6 +591,7 @@ function getOpenAI(){
   return _openai;
 }
 
+// GROK_KEY / XAI_API_KEY is used for both chat completions and realtime voice websocket
 function getGrokKey(){
   return process.env.GROK_KEY || process.env.XAI_API_KEY || "";
 }
@@ -1578,9 +1582,274 @@ app.get("/api/chat/history", requireActivatedOrApiKey, async (req, res) => {
 
 const PORT = process.env.PORT || 8787;
 
-app.listen(PORT, "0.0.0.0", () => {
+// ======= WebSocket: /ws/voice (proxy to xAI realtime) =======
+// Frontend connects to: ws(s)://<your-host>/ws/voice
+// Server connects to:   wss://api.x.ai/v1/realtime
+
+function getCookieValue(cookieHeader, name){
+  try{
+    const s = String(cookieHeader || "");
+    const parts = s.split(/;\s*/);
+    for(const p of parts){
+      const idx = p.indexOf("=");
+      if(idx <= 0) continue;
+      const k = p.slice(0, idx).trim();
+      const v = p.slice(idx + 1).trim();
+      if(k === name) return decodeURIComponent(v);
+    }
+  }catch(e){}
+  return "";
+}
+
+function wsIsAllowed(req){
+  // 1) Origin allowlist (match your CORS allowlist)
+  const origin = String(req.headers.origin || "");
+  if(origin && !ALLOWED_ORIGINS.has(origin)) return false;
+
+  // 2) Activated session via sid cookie OR admin API key
+  const cookie = String(req.headers.cookie || "");
+  const sidCookie = getCookieValue(cookie, "sid");
+  const raw = verifySid(sidCookie);
+  if(raw) return true;
+
+  // Allow admin key via header for debugging (optional)
+  if(API_KEY){
+    const k = String(req.headers["x-api-key"] || "").trim();
+    if(k && k === API_KEY) return true;
+
+    const auth = String(req.headers.authorization || "");
+    if(auth.toLowerCase().startsWith("bearer ") && auth.slice(7).trim() === API_KEY) return true;
+  }
+
+  return false;
+}
+
+function safeJsonParse(s){
+  try{ return JSON.parse(String(s || "")); }catch(e){ return null; }
+}
+
+function wsSend(ws, obj){
+  try{
+    if(ws && ws.readyState === WebSocket.OPEN){
+      ws.send(JSON.stringify(obj));
+    }
+  }catch(e){}
+}
+
+// Create HTTP server so we can handle WS upgrades
+const server = http.createServer(app);
+
+// We use noServer mode to validate upgrade requests ourselves
+const wss = new WebSocketServer({ noServer: true });
+
+server.on("upgrade", (req, socket, head) => {
+  try{
+    const url = new URL(req.url || "/", "http://localhost");
+    if(url.pathname !== "/ws/voice"){
+      socket.destroy();
+      return;
+    }
+
+    if(!wsIsAllowed(req)){
+      try{ socket.write("HTTP/1.1 401 Unauthorized\r\n\r\n"); }catch(e){}
+      socket.destroy();
+      return;
+    }
+
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      wss.emit("connection", ws, req);
+    });
+  }catch(e){
+    socket.destroy();
+  }
+});
+
+wss.on("connection", (clientWs, req) => {
+  const GROK_KEY = getGrokKey();
+  if(!GROK_KEY){
+    wsSend(clientWs, { type: "error", message: "SERVER_MISSING_GROK_KEY" });
+    try{ clientWs.close(); }catch(e){}
+    return;
+  }
+
+  let upstream = null;          // WS to xAI
+  let upstreamOpen = false;
+  let closing = false;
+
+  function closeAll(){
+    if(closing) return;
+    closing = true;
+    try{ if(upstream) upstream.close(); }catch(e){}
+    try{ clientWs.close(); }catch(e){}
+  }
+
+  function ensureUpstream(){
+    if(upstream && (upstream.readyState === WebSocket.OPEN || upstream.readyState === WebSocket.CONNECTING)){
+      return;
+    }
+
+    upstreamOpen = false;
+
+    // xAI realtime WS
+    upstream = new WebSocket("wss://api.x.ai/v1/realtime", {
+      headers: {
+        Authorization: "Bearer " + GROK_KEY
+      },
+      handshakeTimeout: 15000
+    });
+
+    upstream.on("open", () => {
+      upstreamOpen = true;
+
+      // Default session settings (server VAD so the model decides when to respond)
+      // Note: xAI API is OpenAI-compatible-ish for realtime events.
+      wsSend(upstream, {
+        type: "session.update",
+        session: {
+          // Let the model detect turns automatically
+          turn_detection: { type: "server_vad" },
+          input_audio_format: "pcm16",
+          output_audio_format: "pcm16",
+          // Pick a voice; your frontend can override via session.start
+          voice: String(process.env.GROK_VOICE || "Eve"),
+          modalities: ["text", "audio"],
+          // Keep responses short-ish by default; you can tune later
+          instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
+        }
+      });
+
+      // Some realtime APIs require a response.create to start speaking.
+      // With server_vad, the model usually responds automatically when it detects end-of-turn.
+    });
+
+    upstream.on("message", (data) => {
+      const msg = safeJsonParse(data);
+      if(!msg) return;
+
+      // Forward audio deltas to frontend in the format it expects
+      // We map multiple possible xAI event names to one.
+      const t = String(msg.type || "");
+
+      // Common patterns: output_audio_buffer.delta OR response.audio.delta
+      if((t === "output_audio_buffer.delta" || t === "response.audio.delta" || t === "response.output_audio.delta") && msg.audio){
+        wsSend(clientWs, { type: "output_audio_buffer.delta", audio: msg.audio });
+        return;
+      }
+
+      // Some APIs send audio under `delta` or nested structures; best-effort
+      if((t.includes("audio") && t.includes("delta")) && msg.delta && !msg.audio){
+        wsSend(clientWs, { type: "output_audio_buffer.delta", audio: msg.delta });
+        return;
+      }
+
+      // Optional: forward text for debugging
+      if(t === "response.output_text.delta" && msg.delta){
+        wsSend(clientWs, { type: "output_text", text: msg.delta });
+        return;
+      }
+      if(t === "response.output_text" && msg.text){
+        wsSend(clientWs, { type: "output_text", text: msg.text });
+        return;
+      }
+
+      if(t === "error"){
+        wsSend(clientWs, { type: "error", message: msg.message || msg.error || "UPSTREAM_ERROR" });
+        return;
+      }
+
+      // Ignore other events by default
+    });
+
+    upstream.on("close", () => {
+      upstreamOpen = false;
+      // Tell client then close
+      wsSend(clientWs, { type: "error", message: "UPSTREAM_CLOSED" });
+      closeAll();
+    });
+
+    upstream.on("error", (e) => {
+      upstreamOpen = false;
+      wsSend(clientWs, { type: "error", message: "UPSTREAM_ERROR" });
+      closeAll();
+    });
+  }
+
+  // Client messages -> upstream
+  clientWs.on("message", (data) => {
+    const msg = safeJsonParse(data);
+    if(!msg) return;
+
+    const type = String(msg.type || "");
+
+    // Start session: ensure upstream and optionally update session settings
+    if(type === "session.start"){
+      ensureUpstream();
+
+      // If upstream is already open, apply session overrides now; otherwise, apply after open by sending anyway
+      const voice = String(msg.voice || process.env.GROK_VOICE || "Eve");
+      const inFmt = String(msg.input_audio_format || "pcm16");
+      const outFmt = String(msg.output_audio_format || "pcm16");
+
+      wsSend(upstream, {
+        type: "session.update",
+        session: {
+          turn_detection: { type: "server_vad" },
+          input_audio_format: inFmt,
+          output_audio_format: outFmt,
+          voice,
+          modalities: ["text", "audio"],
+          instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
+        }
+      });
+
+      wsSend(clientWs, { type: "session.started", ok: true });
+      return;
+    }
+
+    if(type === "session.stop"){
+      closeAll();
+      return;
+    }
+
+    // Audio append: forward to xAI realtime
+    if(type === "input_audio_buffer.append" && typeof msg.audio === "string"){
+      ensureUpstream();
+      wsSend(upstream, { type: "input_audio_buffer.append", audio: msg.audio });
+      return;
+    }
+
+    // Optional: send text to upstream (for testing / hybrid control)
+    if(type === "input_text" && typeof msg.text === "string"){
+      ensureUpstream();
+      // best-effort compatible event
+      wsSend(upstream, {
+        type: "conversation.item.create",
+        item: {
+          type: "message",
+          role: "user",
+          content: [{ type: "input_text", text: String(msg.text || "") }]
+        }
+      });
+      wsSend(upstream, { type: "response.create" });
+      return;
+    }
+
+    // Unknown message types are ignored
+  });
+
+  clientWs.on("close", () => {
+    closeAll();
+  });
+
+  clientWs.on("error", () => {
+    closeAll();
+  });
+});
+
+server.listen(PORT, "0.0.0.0", () => {
   console.log("✅ Backend running on port:", PORT);
   console.log("✅ Ping route ready: GET /api/ping");
+  console.log("✅ Voice WS ready: /ws/voice");
 });
 
 // ======= GPT Model Picker by Mode =======
