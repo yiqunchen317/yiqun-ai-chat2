@@ -232,6 +232,10 @@ header{
     background:rgba(2,6,23,0.42);
     box-shadow:0 10px 26px rgba(0,0,0,0.28);
 }
+.chipBtn.active{
+  border-color: rgba(34,197,94,0.55);
+  box-shadow: 0 10px 26px rgba(34,197,94,0.18);
+}
 
 .chipBtn.danger{
     border-color:rgba(248,113,113,0.25);
@@ -802,6 +806,7 @@ transform: translateY(-4px);
   <div class="headerActions">
     <button class="chipBtn" id="modelBtn" title="模型选择" type="button">模型</button>
     <button class="iconBtn" id="unlockBtn" title="搜索/输入密钥解锁天晴" type="button">🔍</button>
+<button class="chipBtn" id="voiceBtn" title="语音助手（仅无尽模式｜后端语音）" type="button" style="display:none;">🎤 语音</button>
 <button class="chipBtn" id="imageBtn" title="生成图片" type="button">🖼 图片</button>
 <button class="chipBtn" id="authBtn" title="登录/退出" type="button">登录</button>
 <button class="chipBtn" id="privacyBtn" title="隐私模式：不保存聊天历史" type="button">隐私：关</button>
@@ -812,8 +817,8 @@ transform: translateY(-4px);
 
 <div id="modelMenu" class="modelMenu">
     <div class="modelItem" data-model="strong">益群大模型（最强）</div>
-    <div class="modelItem" data-model="cheap">弱智模式（最便宜）</div>
-    <div class="modelItem isHidden" id="tianqingItem" data-model="tianqing">天晴小宝贝（最强）</div>
+    <div class="modelItem" data-model="cheap">弱智模式（脑残）</div>
+    <div class="modelItem isHidden" id="tianqingItem" data-model="tianqing">天晴小宝贝（爱你）</div>
     <div class="modelItem isHidden" id="creatorItem" data-model="creator">创作者模式（本人）</div>
     <div class="modelItem" data-model="infinity">无尽模型（慎试）</div>
 </div>
@@ -1072,6 +1077,309 @@ const modelBadge = document.getElementById("modelBadge");
 const unlockBtn = document.getElementById("unlockBtn");
 const tianqingItem = document.getElementById("tianqingItem");
 const creatorItem = document.getElementById("creatorItem");
+
+const voiceBtn = document.getElementById("voiceBtn");
+
+// ======= Grok Voice Agent（方案1：实时语音流，经由你的后端 WS 转发到 xAI） =======
+// 说明：
+// - 前端只连你的后端：/ws/voice
+// - 后端再连 xAI realtime: wss://api.x.ai/v1/realtime
+// - 这里实现：采集麦克风 PCM16 -> WS 发送；接收 WS 音频 delta -> 播放
+
+let voiceModeOn = false;                 // 是否开启语音助手
+let voiceWs = null;                      // WebSocket 连接到你的后端
+let micStream = null;                    // getUserMedia stream
+let audioCtx = null;                     // AudioContext
+let processor = null;                    // ScriptProcessorNode（够用；更稳可后续换 AudioWorklet）
+let inputSource = null;                  // MediaStreamAudioSourceNode
+let isVoiceStarting = false;
+
+// 播放队列：把输出音频按顺序排队播放
+let playQueueTime = 0;
+let queuedSources = [];
+
+function setVoiceBtnUI(){
+  if(!voiceBtn) return;
+  const show = (currentModelMode === "infinity");
+  voiceBtn.style.display = show ? "inline-flex" : "none";
+  voiceBtn.classList.toggle("active", !!voiceModeOn);
+  voiceBtn.textContent = voiceModeOn ? "🟢 语音" : "🎤 语音";
+  voiceBtn.title = voiceModeOn ? "语音助手：开（点击关闭）" : "语音助手：关（仅无尽模式）";
+}
+
+function wsUrlForVoice(){
+  // 同源优先；如果 BACKEND_BASE 为空，使用当前域
+  const base = (typeof BACKEND_BASE === "string") ? BACKEND_BASE : "";
+  const origin = base ? base : (location.origin || "");
+
+  // 把 http(s) 转成 ws(s)
+  if(origin.startsWith("https://")) return origin.replace("https://", "wss://") + "/ws/voice";
+  if(origin.startsWith("http://"))  return origin.replace("http://",  "ws://")  + "/ws/voice";
+
+  // 兜底：按页面协议
+  const proto = (location.protocol === "https:") ? "wss://" : "ws://";
+  return proto + location.host + "/ws/voice";
+}
+
+function floatTo16BitPCM(float32Array){
+  const len = float32Array.length;
+  const out = new Int16Array(len);
+  for(let i=0;i<len;i++){
+    let s = float32Array[i];
+    if(s > 1) s = 1;
+    if(s < -1) s = -1;
+    out[i] = (s < 0) ? (s * 0x8000) : (s * 0x7FFF);
+  }
+  return out;
+}
+
+function int16ToFloat32(int16Array){
+  const len = int16Array.length;
+  const out = new Float32Array(len);
+  for(let i=0;i<len;i++) out[i] = int16Array[i] / 0x8000;
+  return out;
+}
+
+function arrayBufferToBase64(buf){
+  let binary = "";
+  const bytes = new Uint8Array(buf);
+  const chunk = 0x8000;
+  for(let i=0;i<bytes.length;i+=chunk){
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i+chunk));
+  }
+  return btoa(binary);
+}
+
+function base64ToArrayBuffer(b64){
+  const binary = atob(String(b64 || ""));
+  const len = binary.length;
+  const bytes = new Uint8Array(len);
+  for(let i=0;i<len;i++) bytes[i] = binary.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function clearPlayQueue(){
+  try{
+    queuedSources.forEach(s=>{ try{ s.stop(0); }catch(e){} });
+  }catch(e){}
+  queuedSources = [];
+  playQueueTime = 0;
+}
+
+function playPcm16Chunk(pcm16){
+  if(!audioCtx) return;
+
+  // pcm16: Int16Array
+  const float32 = int16ToFloat32(pcm16);
+  const buf = audioCtx.createBuffer(1, float32.length, audioCtx.sampleRate);
+  buf.getChannelData(0).set(float32);
+
+  const src = audioCtx.createBufferSource();
+  src.buffer = buf;
+  src.connect(audioCtx.destination);
+
+  const now = audioCtx.currentTime;
+  if(!playQueueTime || playQueueTime < now) playQueueTime = now;
+
+  try{
+    src.start(playQueueTime);
+    playQueueTime += buf.duration;
+    queuedSources.push(src);
+    src.onended = ()=>{
+      // 清理已结束的 source
+      try{ queuedSources = queuedSources.filter(x=>x !== src); }catch(e){}
+    };
+  }catch(e){}
+}
+
+function sendWs(obj){
+  if(!voiceWs || voiceWs.readyState !== 1) return;
+  try{ voiceWs.send(JSON.stringify(obj)); }catch(e){}
+}
+
+async function startVoice(){
+  if(isVoiceStarting) return;
+  isVoiceStarting = true;
+
+  try{
+    if(currentModelMode !== "infinity"){
+      alert("语音助手只在【无尽模型】可用。\n请先切到 无尽模型（grok）。");
+      voiceModeOn = false;
+      setVoiceBtnUI();
+      isVoiceStarting = false;
+      return;
+    }
+
+    // 1) 连接后端 WS
+    const url = wsUrlForVoice();
+    voiceWs = new WebSocket(url);
+
+    voiceWs.onopen = async ()=>{
+      try{
+        // 2) 开音频上下文 + 麦克风
+        audioCtx = new (window.AudioContext || window.webkitAudioContext)({
+          // xAI 文档常见配置 24k；浏览器可能不一定严格按这个，后端可重采样
+          sampleRate: 24000
+        });
+
+        micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        inputSource = audioCtx.createMediaStreamSource(micStream);
+
+        // ScriptProcessor：4096 帧/次（够用）；更低延迟可 2048
+        processor = audioCtx.createScriptProcessor(4096, 1, 1);
+
+        processor.onaudioprocess = (e)=>{
+          // ✅ Barge-in：只要用户开始说话，就立刻打断 AI 的播放
+          // 注意：这里是“采集回调”，会非常频繁触发；我们只在语音模式开启且 WS 已连上时才打断。
+          if(voiceModeOn && voiceWs && voiceWs.readyState === 1){
+            try{ clearPlayQueue(); }catch(_e){}
+          }
+
+          if(!voiceModeOn) return;
+          if(!voiceWs || voiceWs.readyState !== 1) return;
+
+          const inputData = e.inputBuffer.getChannelData(0);
+          const pcm16 = floatTo16BitPCM(inputData);
+          const b64 = arrayBufferToBase64(pcm16.buffer);
+
+          // 发送到后端：后端负责转发到 xAI realtime
+          sendWs({
+            type: "input_audio_buffer.append",
+            audio: b64
+          });
+        };
+
+        inputSource.connect(processor);
+        // 不要把麦克风直接接 destination，避免回声
+        processor.connect(audioCtx.destination);
+
+        // 3) 通知后端开始会话（后端会对接 xAI 的 session.update / response.create 等）
+        sendWs({
+          type: "session.start",
+          mode: "infinity",
+          model: "grok",
+          input_audio_format: "pcm16",
+          output_audio_format: "pcm16",
+          sample_rate: 24000,
+          user_name: (typeof getUserName === "function") ? getUserName() : ""
+        });
+
+        // 初始化播放队列
+        clearPlayQueue();
+
+        isVoiceStarting = false;
+      }catch(err){
+        isVoiceStarting = false;
+        stopVoice();
+        alert("语音启动失败：" + (err && err.message ? err.message : String(err)));
+      }
+    };
+
+    voiceWs.onmessage = (evt)=>{
+      let msg = null;
+      try{ msg = JSON.parse(String(evt.data || "{}")); }catch(e){ msg = null; }
+      if(!msg) return;
+
+      // 约定：后端把 xAI 的音频 delta 转发为 output_audio_buffer.delta
+      if(msg.type === "output_audio_buffer.delta" && msg.audio){
+        try{
+          const ab = base64ToArrayBuffer(msg.audio);
+          const pcm16 = new Int16Array(ab);
+          playPcm16Chunk(pcm16);
+        }catch(e){}
+        return;
+      }
+
+      // 可选：后端也可以转发文本（方便你 debug）
+      if(msg.type === "output_text" && msg.text && DEBUG){
+        console.log("[voice text]", msg.text);
+      }
+
+      // 错误
+      if(msg.type === "error"){
+        if(DEBUG) console.log("[voice error]", msg);
+      }
+    };
+
+    voiceWs.onerror = ()=>{
+      // onerror 不一定给细节
+    };
+
+    voiceWs.onclose = ()=>{
+      // WS 断开就停
+      if(voiceModeOn){
+        voiceModeOn = false;
+        setVoiceBtnUI();
+      }
+      stopVoice();
+    };
+
+  }catch(e){
+    isVoiceStarting = false;
+    stopVoice();
+    alert("语音启动失败：" + (e && e.message ? e.message : String(e)));
+  }
+}
+
+function stopVoice(){
+  // 停止采集与播放
+  try{ clearPlayQueue(); }catch(e){}
+
+  try{ if(processor){ processor.disconnect(); processor.onaudioprocess = null; } }catch(e){}
+  try{ if(inputSource){ inputSource.disconnect(); } }catch(e){}
+  processor = null;
+  inputSource = null;
+
+  try{
+    if(micStream){
+      micStream.getTracks().forEach(t=>{ try{ t.stop(); }catch(e){} });
+    }
+  }catch(e){}
+  micStream = null;
+
+  try{ if(audioCtx){ audioCtx.close(); } }catch(e){}
+  audioCtx = null;
+
+  try{ if(voiceWs){ voiceWs.close(); } }catch(e){}
+  voiceWs = null;
+
+  isVoiceStarting = false;
+}
+
+function toggleVoiceMode(){
+  if(currentModelMode !== "infinity"){
+    alert("语音助手只在【无尽模型】可用。\n请先切到 无尽模型（grok）。");
+    return;
+  }
+
+  voiceModeOn = !voiceModeOn;
+  setVoiceBtnUI();
+
+  if(!voiceModeOn){
+    sendWs({ type: "session.stop" });
+    stopVoice();
+    return;
+  }
+
+  startVoice();
+}
+
+// 兼容：如果其它地方还在调用 speakText（旧的浏览器朗读），这里改成：
+// - 若语音 WS 已连接：把文本发给后端（后端可以选择让模型说出来）
+// - 否则：不朗读（避免退回浏览器自带朗读）
+function speakText(text){
+  const t = String(text || "").trim();
+  if(!t) return Promise.resolve();
+
+  if(voiceWs && voiceWs.readyState === 1 && voiceModeOn && currentModelMode === "infinity"){
+    sendWs({ type: "input_text", text: t });
+  }
+  return Promise.resolve();
+}
+
+if(voiceBtn){
+  voiceBtn.addEventListener("click", ()=> toggleVoiceMode());
+}
 // ======= 图片弹窗 DOM =======
 const imageBtn = document.getElementById("imageBtn");
 const imgModal = document.getElementById("imgModal");
@@ -1901,6 +2209,22 @@ if(last && last.role === "ai"){
     input.focus();
     autoGrowTextarea();
 
+    // ===== 语音助手：无尽模式自动朗读最后一条AI回复 =====
+    try{
+      if(voiceModeOn && modeAtSend === "infinity"){
+        for(let i = history.length - 1; i >= 0; i--){
+          const m = history[i];
+          if(m && m.role === "ai"){
+            const t = String(m.text || "").trim();
+            if(t && t !== "正在思考..." && t !== "..." && t !== "…"){
+              speakText(t);
+              break;
+            }
+          }
+        }
+      }
+    }catch(e){}
+
     // 正常结束后不保留继续按钮
     if(!lastCallAborted){
       canContinue = false;
@@ -2249,6 +2573,8 @@ function updateCreatorVisibility(){
 updateTianqingVisibility();
 modelBtn.textContent = "弱智模式";
 if(modelBadge) modelBadge.textContent = "弱智模式";
+// 初始化语音按钮显示状态（默认隐藏；仅无尽模式显示）
+setVoiceBtnUI();
 
 modelBtn.addEventListener("click", ()=>{
     modelMenu.classList.toggle("show");
@@ -2261,41 +2587,51 @@ document.addEventListener("click", (e)=>{
 });
 
 modelItems.forEach(item=>{
-    item.addEventListener("click", ()=>{
-        const nextMode = item.dataset.model;
-        // 天晴模式需要先解锁
-        if(nextMode === "tianqing" && !hasTianqingKey()){
-          alert("先点右侧🔍输入密钥，才能进入天晴小宝贝模式。");
-          return;
-        }
-        if(nextMode === "creator" && !hasCreatorKey()){
-          alert("先输入创作者密钥才能进入创作者模式");
-          return;
-        }
-        currentModelMode = nextMode;
-        modelMenu.classList.remove("show");
+  item.addEventListener("click", ()=>{
+    const nextMode = item.dataset.model;
 
-        if(currentModelMode === "strong"){
-            modelBtn.textContent = "益群大模型";
-            if(modelBadge) modelBadge.textContent = "益群大模型";
-        }
-        if(currentModelMode === "cheap"){
-            modelBtn.textContent = "弱智模式";
-            if(modelBadge) modelBadge.textContent = "弱智模式";
-        }
-        if(currentModelMode === "tianqing"){
-            modelBtn.textContent = "天晴小宝贝";
-            if(modelBadge) modelBadge.textContent = "天晴小宝贝";
-        }
-        if(currentModelMode === "creator"){
-            modelBtn.textContent = "创作者模式";
-            if(modelBadge) modelBadge.textContent = "创作者模式";
-        }
-        if(currentModelMode === "infinity"){
-            modelBtn.textContent = "无尽模型";
-            if(modelBadge) modelBadge.textContent = "无尽模型";
-        }
-    });
+    // 天晴模式需要先解锁
+    if(nextMode === "tianqing" && !hasTianqingKey()){
+      alert("先点右侧🔍输入密钥，才能进入天晴小宝贝模式。");
+      return;
+    }
+    if(nextMode === "creator" && !hasCreatorKey()){
+      alert("先输入创作者密钥才能进入创作者模式");
+      return;
+    }
+
+    currentModelMode = nextMode;
+    modelMenu.classList.remove("show");
+
+    if(currentModelMode === "strong"){
+      modelBtn.textContent = "益群大模型";
+      if(modelBadge) modelBadge.textContent = "益群大模型";
+    }
+    if(currentModelMode === "cheap"){
+      modelBtn.textContent = "弱智模式";
+      if(modelBadge) modelBadge.textContent = "弱智模式";
+    }
+    if(currentModelMode === "tianqing"){
+      modelBtn.textContent = "天晴小宝贝";
+      if(modelBadge) modelBadge.textContent = "天晴小宝贝";
+    }
+    if(currentModelMode === "creator"){
+      modelBtn.textContent = "创作者模式";
+      if(modelBadge) modelBadge.textContent = "创作者模式";
+    }
+    if(currentModelMode === "infinity"){
+      modelBtn.textContent = "无尽模型";
+      if(modelBadge) modelBadge.textContent = "无尽模型";
+    }
+
+    // ===== 语音按钮：只在无尽模式显示；离开无尽模式自动关闭语音 =====
+    if(currentModelMode !== "infinity" && voiceModeOn){
+      voiceModeOn = false;
+      stopVoice();
+      try{ window.speechSynthesis && window.speechSynthesis.cancel && window.speechSynthesis.cancel(); }catch(e){}
+    }
+    setVoiceBtnUI();
+  });
 });
 // ======= 解锁按钮：输入密钥后显示“天晴小宝贝”模式/创作者模式 =======
 // 目标：输入错误 -> 明确提示“密钥错误”，不解锁；输入正确 -> 才持久化解锁。
