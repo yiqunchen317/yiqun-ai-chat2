@@ -1636,6 +1636,10 @@ function wsSend(ws, obj){
   }catch(e){}
 }
 
+function voiceLog(...args){
+  try{ console.log("[voice]", ...args); }catch(_e){}
+}
+
 // Create HTTP server so we can handle WS upgrades
 const server = http.createServer(app);
 
@@ -1672,14 +1676,21 @@ wss.on("connection", (clientWs, req) => {
     return;
   }
 
+  voiceLog("client connected", {
+    origin: String(req.headers.origin || ""),
+    ua: String(req.headers["user-agent"] || "").slice(0, 120)
+  });
+
   let upstream = null;          // WS to xAI
   let upstreamOpen = false;
   let closing = false;
   let audioTurnPending = false; // 已收到用户音频，等待触发模型回复
+  let pendingSessionConfig = null; // upstream 还没 open 前，先缓存 session.start 配置
 
   function closeAll(){
     if(closing) return;
     closing = true;
+    voiceLog("closing all", { upstreamOpen, audioTurnPending });
     try{ if(upstream) upstream.close(); }catch(e){}
     try{ clientWs.close(); }catch(e){}
   }
@@ -1702,25 +1713,27 @@ wss.on("connection", (clientWs, req) => {
     upstream.on("open", () => {
       upstreamOpen = true;
 
-      // Default session settings (server VAD so the model decides when to respond)
-      // Note: xAI API is OpenAI-compatible-ish for realtime events.
-      wsSend(upstream, {
-        type: "session.update",
-        session: {
-          // Let the model detect turns automatically
-          turn_detection: { type: "server_vad", create_response: true },
-          input_audio_format: "pcm16",
-          output_audio_format: "pcm16",
-          // Pick a voice; your frontend can override via session.start
-          voice: String(process.env.GROK_VOICE || "Eve"),
-          modalities: ["text", "audio"],
-          // Keep responses short-ish by default; you can tune later
-          instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
-        }
+      const sessionConfig = pendingSessionConfig || {
+        model: String(process.env.GROK_VOICE_MODEL || "grok-4").trim(),
+        turn_detection: { type: "server_vad", create_response: true },
+        input_audio_format: "pcm16",
+        output_audio_format: "pcm16",
+        voice: String(process.env.GROK_VOICE || "Eve"),
+        modalities: ["text", "audio"],
+        instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
+      };
+
+      voiceLog("upstream open", {
+        model: sessionConfig.model,
+        voice: sessionConfig.voice,
+        inFmt: sessionConfig.input_audio_format,
+        outFmt: sessionConfig.output_audio_format
       });
 
-      // Some realtime APIs require a response.create to start speaking.
-      // With server_vad, the model usually responds automatically when it detects end-of-turn.
+      wsSend(upstream, {
+        type: "session.update",
+        session: sessionConfig
+      });
     });
 
     upstream.on("message", (data) => {
@@ -1730,6 +1743,9 @@ wss.on("connection", (clientWs, req) => {
       // Forward audio deltas to frontend in the format it expects
       // We map multiple possible xAI event names to one.
       const t = String(msg.type || "");
+      if(t && t !== "response.audio.delta" && t !== "output_audio_buffer.delta" && t !== "response.output_audio.delta"){
+        voiceLog("upstream event", t);
+      }
 
       // 某些 realtime 实现里，仅 append 音频并不会自动开口；
       // 当服务端 VAD 检测到用户说完时，主动 commit + response.create 兜底一次。
@@ -1749,6 +1765,7 @@ wss.on("connection", (clientWs, req) => {
 
       // Some APIs send audio under `delta` or nested structures; best-effort
       if((t.includes("audio") && t.includes("delta")) && msg.delta && !msg.audio){
+        audioTurnPending = false;
         wsSend(clientWs, { type: "output_audio_buffer.delta", audio: msg.delta });
         return;
       }
@@ -1766,6 +1783,7 @@ wss.on("connection", (clientWs, req) => {
       }
 
       if(t === "error"){
+        voiceLog("upstream error", msg.message || msg.error || "UPSTREAM_ERROR");
         wsSend(clientWs, { type: "error", message: msg.message || msg.error || "UPSTREAM_ERROR" });
         return;
       }
@@ -1775,13 +1793,14 @@ wss.on("connection", (clientWs, req) => {
 
     upstream.on("close", () => {
       upstreamOpen = false;
-      // Tell client then close
+      voiceLog("upstream close");
       wsSend(clientWs, { type: "error", message: "UPSTREAM_CLOSED" });
       closeAll();
     });
 
     upstream.on("error", (e) => {
       upstreamOpen = false;
+      voiceLog("upstream ws error", e?.message || String(e || ""));
       wsSend(clientWs, { type: "error", message: "UPSTREAM_ERROR" });
       closeAll();
     });
@@ -1793,26 +1812,42 @@ wss.on("connection", (clientWs, req) => {
     if(!msg) return;
 
     const type = String(msg.type || "");
+    if(type && type !== "input_audio_buffer.append"){
+      voiceLog("client event", type);
+    }
 
     // Start session: ensure upstream and optionally update session settings
     if(type === "session.start"){
       ensureUpstream();
 
-      // If upstream is already open, apply session overrides now; otherwise, apply after open by sending anyway
       const voice = String(msg.voice || process.env.GROK_VOICE || "Eve");
       const inFmt = String(msg.input_audio_format || "pcm16");
       const outFmt = String(msg.output_audio_format || "pcm16");
+      const modelName = String(msg.model || process.env.GROK_VOICE_MODEL || "grok-4").trim();
 
-      wsSend(upstream, {
-        type: "session.update",
-        session: {
-          turn_detection: { type: "server_vad", create_response: true },
-          input_audio_format: inFmt,
-          output_audio_format: outFmt,
-          voice,
-          modalities: ["text", "audio"],
-          instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
-        }
+      pendingSessionConfig = {
+        model: modelName,
+        turn_detection: { type: "server_vad", create_response: true },
+        input_audio_format: inFmt,
+        output_audio_format: outFmt,
+        voice,
+        modalities: ["text", "audio"],
+        instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
+      };
+
+      if(upstreamOpen){
+        wsSend(upstream, {
+          type: "session.update",
+          session: pendingSessionConfig
+        });
+      }
+
+      voiceLog("session.start", {
+        model: modelName,
+        voice,
+        inFmt,
+        outFmt,
+        upstreamOpen
       });
 
       wsSend(clientWs, { type: "session.started", ok: true });
@@ -1828,6 +1863,7 @@ wss.on("connection", (clientWs, req) => {
     if(type === "input_audio_buffer.append" && typeof msg.audio === "string"){
       ensureUpstream();
       audioTurnPending = true;
+      voiceLog("audio append", { bytesBase64: String(msg.audio || "").length, upstreamOpen });
       wsSend(upstream, { type: "input_audio_buffer.append", audio: msg.audio });
       return;
     }
@@ -1837,6 +1873,7 @@ wss.on("connection", (clientWs, req) => {
       ensureUpstream();
       if(audioTurnPending){
         audioTurnPending = false;
+        voiceLog("audio commit -> response.create");
         wsSend(upstream, { type: "input_audio_buffer.commit" });
         wsSend(upstream, { type: "response.create" });
       }
@@ -1863,10 +1900,12 @@ wss.on("connection", (clientWs, req) => {
   });
 
   clientWs.on("close", () => {
+    voiceLog("client close");
     closeAll();
   });
 
-  clientWs.on("error", () => {
+  clientWs.on("error", (e) => {
+    voiceLog("client ws error", e?.message || String(e || ""));
     closeAll();
   });
 });
