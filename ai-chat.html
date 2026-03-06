@@ -1093,10 +1093,15 @@ let audioCtx = null;                     // AudioContext
 let processor = null;                    // ScriptProcessorNode（够用；更稳可后续换 AudioWorklet）
 let inputSource = null;                  // MediaStreamAudioSourceNode
 let isVoiceStarting = false;
+let voiceSpeechActive = false;          // 本地是否检测到“正在说话”
+let voiceLastSpeechAt = 0;              // 最近一次检测到明显语音的时间
+const VOICE_RMS_THRESHOLD = 0.006;      // 说话音量阈值（调低，避免正常说话也识别不到）
+const VOICE_SILENCE_MS = 450;           // 连续静音这么久后，视为一句话结束
 
 // 播放队列：把输出音频按顺序排队播放
 let playQueueTime = 0;
 let queuedSources = [];
+let playbackSampleRate = 24000;         // 后端 realtime 语音默认按 24k PCM16 返回
 
 function setVoiceBtnUI(){
   if(!voiceBtn) return;
@@ -1171,7 +1176,7 @@ function playPcm16Chunk(pcm16){
 
   // pcm16: Int16Array
   const float32 = int16ToFloat32(pcm16);
-  const buf = audioCtx.createBuffer(1, float32.length, audioCtx.sampleRate);
+  const buf = audioCtx.createBuffer(1, float32.length, playbackSampleRate || 24000);
   buf.getChannelData(0).set(float32);
 
   const src = audioCtx.createBufferSource();
@@ -1215,6 +1220,7 @@ async function startVoice(){
     voiceWs = new WebSocket(url);
 
     voiceWs.onopen = async ()=>{
+      console.log("[voice] ws open");
       try{
         // 2) 开音频上下文 + 麦克风
         audioCtx = new (window.AudioContext || window.webkitAudioContext)({
@@ -1229,24 +1235,47 @@ async function startVoice(){
         processor = audioCtx.createScriptProcessor(4096, 1, 1);
 
         processor.onaudioprocess = (e)=>{
-          // ✅ Barge-in：只要用户开始说话，就立刻打断 AI 的播放
-          // 注意：这里是“采集回调”，会非常频繁触发；我们只在语音模式开启且 WS 已连上时才打断。
-          if(voiceModeOn && voiceWs && voiceWs.readyState === 1){
-            try{ clearPlayQueue(); }catch(_e){}
-          }
-
           if(!voiceModeOn) return;
           if(!voiceWs || voiceWs.readyState !== 1) return;
 
           const inputData = e.inputBuffer.getChannelData(0);
-          const pcm16 = floatTo16BitPCM(inputData);
-          const b64 = arrayBufferToBase64(pcm16.buffer);
 
-          // 发送到后端：后端负责转发到 xAI realtime
-          sendWs({
-            type: "input_audio_buffer.append",
-            audio: b64
-          });
+          // 计算本地音量（RMS），避免“静音也一直打断 / 一直发音频”
+          let sum = 0;
+          for(let i = 0; i < inputData.length; i++){
+            const s = inputData[i] || 0;
+            sum += s * s;
+          }
+          const rms = Math.sqrt(sum / Math.max(1, inputData.length));
+          const now = Date.now();
+          const isSpeakingNow = rms >= VOICE_RMS_THRESHOLD;
+
+          // 只有真正检测到用户开始说话时，才打断 AI
+          if(isSpeakingNow){
+            voiceLastSpeechAt = now;
+            if(!voiceSpeechActive){
+              voiceSpeechActive = true;
+              try{ clearPlayQueue(); }catch(_e){}
+            }
+
+            const pcm16 = floatTo16BitPCM(inputData);
+            const b64 = arrayBufferToBase64(pcm16.buffer);
+            sendWs({
+              type: "input_audio_buffer.append",
+              audio: b64
+            });
+            return;
+          }
+
+          // 如果刚刚还在说话，现在已经安静了一段时间：主动提交一轮，让后端触发模型回复
+          if(voiceSpeechActive && (now - voiceLastSpeechAt) >= VOICE_SILENCE_MS){
+            voiceSpeechActive = false;
+            console.log("[voice] commit sentence");
+            sendWs({ type: "input_audio_buffer.commit" });
+            return;
+          }
+
+          // 静音状态：什么都不发，避免持续发送噪音/静音导致上游不回话
         };
 
         inputSource.connect(processor);
@@ -1297,15 +1326,16 @@ async function startVoice(){
 
       // 错误
       if(msg.type === "error"){
-        if(DEBUG) console.log("[voice error]", msg);
+        console.log("[voice error]", msg);
       }
     };
 
     voiceWs.onerror = ()=>{
-      // onerror 不一定给细节
+      console.log("[voice] ws error");
     };
 
     voiceWs.onclose = ()=>{
+      console.log("[voice] ws close");
       // WS 断开就停
       if(voiceModeOn){
         voiceModeOn = false;
@@ -1344,6 +1374,8 @@ function stopVoice(){
   voiceWs = null;
 
   isVoiceStarting = false;
+  voiceSpeechActive = false;
+  voiceLastSpeechAt = 0;
 }
 
 function toggleVoiceMode(){
@@ -1368,12 +1400,10 @@ function toggleVoiceMode(){
 // - 若语音 WS 已连接：把文本发给后端（后端可以选择让模型说出来）
 // - 否则：不朗读（避免退回浏览器自带朗读）
 function speakText(text){
-  const t = String(text || "").trim();
-  if(!t) return Promise.resolve();
-
-  if(voiceWs && voiceWs.readyState === 1 && voiceModeOn && currentModelMode === "infinity"){
-    sendWs({ type: "input_text", text: t });
-  }
+  // 方案1：语音完全由实时语音WS控制。
+  // 不再把文本回复重新发送到语音WS，否则会导致：
+  // - 打字聊天时也触发语音
+  // - AI对自己的回复继续说话
   return Promise.resolve();
 }
 
@@ -2208,23 +2238,6 @@ if(last && last.role === "ai"){
     input.disabled = false;
     input.focus();
     autoGrowTextarea();
-
-    // ===== 语音助手：无尽模式自动朗读最后一条AI回复 =====
-    try{
-      if(voiceModeOn && modeAtSend === "infinity"){
-        for(let i = history.length - 1; i >= 0; i--){
-          const m = history[i];
-          if(m && m.role === "ai"){
-            const t = String(m.text || "").trim();
-            if(t && t !== "正在思考..." && t !== "..." && t !== "…"){
-              speakText(t);
-              break;
-            }
-          }
-        }
-      }
-    }catch(e){}
-
     // 正常结束后不保留继续按钮
     if(!lastCallAborted){
       canContinue = false;
