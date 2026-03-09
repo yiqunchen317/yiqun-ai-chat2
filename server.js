@@ -1720,7 +1720,7 @@ wss.on("connection", (clientWs, req) => {
         output_audio_format: "pcm16",
         voice: String(process.env.GROK_VOICE || "Eve"),
         modalities: ["text", "audio"],
-        instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
+        instructions: buildGrokIdentity()
       };
 
       voiceLog("upstream open", {
@@ -1832,7 +1832,7 @@ wss.on("connection", (clientWs, req) => {
         output_audio_format: outFmt,
         voice,
         modalities: ["text", "audio"],
-        instructions: "你是益群的无尽模式语音助手。用中文自然对话。"
+        instructions: buildGrokIdentity()
       };
 
       if(upstreamOpen){
