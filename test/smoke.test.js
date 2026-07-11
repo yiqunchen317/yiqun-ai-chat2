@@ -47,3 +47,11 @@ test("401 activation uses an in-page modal instead of prompt fallback", () => {
   assert.match(index, /activationModal\.classList\.add\("show"\)/);
   assert.doesNotMatch(index, /prompt\("请输入邀请码/);
 });
+
+test("Chat2 uses its own Supabase project and full cloud sessions", () => {
+  assert.match(index, /https:\/\/jxkzhiwjfqwemnljytvt\.supabase\.co/);
+  assert.match(index, /syncSessionToCloud/);
+  assert.match(server, /app\.get\("\/api\/chat\/sessions"/);
+  assert.match(server, /app\.put\("\/api\/chat\/sessions\/:id"/);
+  assert.match(server, /app\.delete\("\/api\/chat\/sessions\/:id"/);
+});
