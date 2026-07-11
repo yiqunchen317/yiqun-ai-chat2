@@ -26,6 +26,15 @@ const app = express();
 const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
 const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
 const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
+// Public verification key currently shown by this Chat2 project's Supabase
+// JWT Keys page. It is safe to ship: this key can only verify signatures.
+// Keep the remote JWKS path as primary so future rotations remain automatic.
+const PINNED_SUPABASE_JWK = {
+  alg: "ES256", crv: "P-256", ext: true, key_ops: ["verify"],
+  kid: "f54a7dcb-75e2-4c20-87b9-ebaa3e4ca90a", kty: "EC", use: "sig",
+  x: "rhZglxKSsd6lDt6Ry2PWMJsOrDpCCIR9w8nNGPsced4",
+  y: "N8gXXKMKIJtTOOPQdUTM65016wQopvcyX4XRvioYXy4",
+};
 const SUPABASE_BUCKET = String(process.env.SUPABASE_BUCKET || "uploads").trim() || "uploads";
 
 // ===== SECURITY: trust proxy so IP works on Render =====
@@ -532,12 +541,7 @@ async function getVerifiedUserId(req){
     console.warn("[auth verify failed]", authRes.status, user?.message || user?.msg || "missing user");
     const verifiedSub = await verifySupabaseJwtWithJwks(token);
     if(!verifiedSub) return null;
-    const { data: adminUser, error: adminError } = await supabase.auth.admin.getUserById(verifiedSub);
-    if(adminError || !adminUser?.user?.id){
-      console.warn("[auth user lookup failed]", adminError?.message || "missing user");
-      return null;
-    }
-    req.userId = adminUser.user.id;
+    req.userId = verifiedSub;
     return req.userId;
   }
   req.userId = user.id;
@@ -575,6 +579,10 @@ async function verifySupabaseJwtWithJwks(token){
     if(!jwk){
       keys = await getSupabaseJwks(true);
       jwk = keys.find((key) => key.kid === header.kid && key.kty === "EC" && key.crv === "P-256");
+    }
+    if(!jwk && header.kid === PINNED_SUPABASE_JWK.kid){
+      jwk = PINNED_SUPABASE_JWK;
+      console.log("[JWKS pinned key]", header.kid.slice(0, 8));
     }
     if(!jwk){ console.warn("[JWKS reject] kid"); return null; }
     const publicKey = await crypto.webcrypto.subtle.importKey(
