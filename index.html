@@ -189,6 +189,15 @@ header{
 #authModal .tinyLink{ font-size:12px; color:#93c5fd; cursor:pointer; user-select:none; }
 #authModal .tinyLink:hover{ text-decoration:underline; text-underline-offset:3px; }
 #authModal .status{ margin-top:10px; font-size:12px; color:#e2e8f0; opacity:0.9; min-height:18px; white-space:pre-line; }
+#authModal .passwordWrap{ position:relative; }
+#authModal .passwordWrap input{ padding-right:74px; }
+#authModal .passwordToggle{ position:absolute; right:10px; top:50%; transform:translateY(-50%); border:0; background:transparent; color:#93c5fd; cursor:pointer; font-size:12px; font-weight:700; }
+#authModal .strength{ height:5px; margin-top:7px; border-radius:99px; background:rgba(255,255,255,.08); overflow:hidden; }
+#authModal .strengthBar{ display:block; width:0; height:100%; transition:.2s; background:#ef4444; }
+#authModal .requirements{ margin-top:7px; font-size:11px; color:#94a3b8; }
+#authModal .hidden{ display:none; }
+#authModal .status.ok{ color:#86efac; }
+#authModal .status.error{ color:#fca5a5; }
 
 #activationModal{
   position:fixed; inset:0; display:none; align-items:center; justify-content:center; z-index:150;
@@ -886,7 +895,19 @@ transform: translateY(-4px);
     <input id="authEmail" type="email" placeholder="you@example.com" autocomplete="email" />
 
     <div class="fieldLabel">密码</div>
-    <input id="authPassword" type="password" placeholder="输入密码（至少6位）" autocomplete="current-password" />
+    <div class="passwordWrap">
+      <input id="authPassword" type="password" placeholder="输入密码" autocomplete="current-password" />
+      <button class="passwordToggle" id="authPasswordToggle" type="button">显示</button>
+    </div>
+    <div id="authStrengthWrap" class="hidden">
+      <div class="strength"><span class="strengthBar" id="authStrengthBar"></span></div>
+      <div class="requirements" id="authRequirements">至少 8 位，并包含字母和数字</div>
+    </div>
+
+    <div id="authConfirmWrap" class="hidden">
+      <div class="fieldLabel">确认密码</div>
+      <input id="authConfirmPassword" type="password" placeholder="再次输入密码" autocomplete="new-password" />
+    </div>
 
     <div class="switchRow">
       <div class="muted" id="authHint">没有账号？点右边注册</div>
@@ -1466,6 +1487,12 @@ const authModal = document.getElementById("authModal");
 const authModalBackdrop = document.getElementById("authModalBackdrop");
 const authEmail = document.getElementById("authEmail");
 const authPassword = document.getElementById("authPassword");
+const authConfirmPassword = document.getElementById("authConfirmPassword");
+const authConfirmWrap = document.getElementById("authConfirmWrap");
+const authStrengthWrap = document.getElementById("authStrengthWrap");
+const authStrengthBar = document.getElementById("authStrengthBar");
+const authRequirements = document.getElementById("authRequirements");
+const authPasswordToggle = document.getElementById("authPasswordToggle");
 const authSubmitBtn = document.getElementById("authSubmitBtn");
 const authCancelBtn = document.getElementById("authCancelBtn");
 const authSwitch = document.getElementById("authSwitch");
@@ -1480,6 +1507,41 @@ const activationCancel = document.getElementById("activationCancel");
 const activationSubmit = document.getElementById("activationSubmit");
 
 let isRegisterMode = false;
+
+function setAuthMode(register){
+  isRegisterMode = !!register;
+  authTitle.textContent = isRegisterMode ? "创建 Chat2 账号" : "登录 Chat2";
+  authSubmitBtn.textContent = isRegisterMode ? "创建账号" : "登录";
+  authHint.textContent = isRegisterMode ? "已经注册？" : "还没有 Chat2 账号？";
+  authSwitch.textContent = isRegisterMode ? "去登录" : "免费注册";
+  authConfirmWrap.classList.toggle("hidden", !isRegisterMode);
+  authStrengthWrap.classList.toggle("hidden", !isRegisterMode);
+  authPassword.autocomplete = isRegisterMode ? "new-password" : "current-password";
+  authStatus.textContent = "";
+  authStatus.className = "status";
+  updatePasswordStrength();
+}
+
+function updatePasswordStrength(){
+  const value = String(authPassword?.value || "");
+  let score = 0;
+  if(value.length >= 8) score++;
+  if(/[A-Za-z]/.test(value)) score++;
+  if(/\d/.test(value)) score++;
+  if(/[^A-Za-z0-9]/.test(value) || value.length >= 12) score++;
+  const colors = ["#ef4444", "#f97316", "#eab308", "#22c55e"];
+  if(authStrengthBar){
+    authStrengthBar.style.width = (score * 25) + "%";
+    authStrengthBar.style.background = colors[Math.max(0, score - 1)];
+  }
+  if(authRequirements) authRequirements.textContent = score >= 3 ? "密码强度良好" : "至少 8 位，并包含字母和数字";
+  return score;
+}
+
+function authMessage(message, ok=false){
+  authStatus.textContent = message;
+  authStatus.className = "status " + (ok ? "ok" : "error");
+}
 
 function openAuthModal(){
   if(!authModal) return;
@@ -1562,7 +1624,10 @@ if(authBtn){
       setRefreshToken("");
       setSavedEmail("");
       updateAuthUI();
-      alert("已退出登录");
+      sessions = loadSessions();
+      renderSessionList();
+      authBtn.textContent = "已退出";
+      setTimeout(updateAuthUI, 900);
       return;
     }
     openAuthModal();
@@ -1578,18 +1643,17 @@ if(authCancelBtn){
 
 if(authSwitch){
   authSwitch.addEventListener("click", ()=>{
-    isRegisterMode = !isRegisterMode;
-    if(isRegisterMode){
-      authTitle.textContent = "注册";
-      authSubmitBtn.textContent = "注册";
-      authHint.textContent = "已有账号？点右边登录";
-      authSwitch.textContent = "登录";
-    }else{
-      authTitle.textContent = "登录";
-      authSubmitBtn.textContent = "登录";
-      authHint.textContent = "没有账号？点右边注册";
-      authSwitch.textContent = "注册";
-    }
+    setAuthMode(!isRegisterMode);
+  });
+}
+
+if(authPassword) authPassword.addEventListener("input", updatePasswordStrength);
+if(authPasswordToggle){
+  authPasswordToggle.addEventListener("click", ()=>{
+    const show = authPassword.type === "password";
+    authPassword.type = show ? "text" : "password";
+    if(authConfirmPassword) authConfirmPassword.type = show ? "text" : "password";
+    authPasswordToggle.textContent = show ? "隐藏" : "显示";
   });
 }
 
@@ -1597,38 +1661,52 @@ if(authSubmitBtn){
   authSubmitBtn.addEventListener("click", async ()=>{
     const email = String(authEmail.value || "").trim();
     const password = String(authPassword.value || "").trim();
+    const confirmation = String(authConfirmPassword?.value || "").trim();
 
     if(!email || !password){
-      authStatus.textContent = "请输入邮箱和密码";
+      authMessage("请输入邮箱和密码");
+      return;
+    }
+    if(isRegisterMode && (password.length < 8 || !/[A-Za-z]/.test(password) || !/\d/.test(password))){
+      authMessage("密码至少 8 位，并且必须同时包含字母和数字");
+      return;
+    }
+    if(isRegisterMode && password !== confirmation){
+      authMessage("两次输入的密码不一致");
       return;
     }
 
     try{
-      authStatus.textContent = "处理中…";
+      authStatus.className = "status";
+      authStatus.textContent = isRegisterMode ? "正在安全创建账号…" : "正在验证账号…";
+      authSubmitBtn.disabled = true;
       let data;
 
       if(isRegisterMode){
         data = await supabaseSignUp(email, password);
-        authStatus.textContent = "注册成功，请登录";
-        isRegisterMode = false;
-        authTitle.textContent = "登录";
-        authSubmitBtn.textContent = "登录";
-        authSwitch.textContent = "注册";
-        return;
+        if(!data?.access_token){
+          authMessage("注册成功！请打开邮箱完成验证，然后回来登录。", true);
+          setTimeout(()=>setAuthMode(false), 2200);
+          return;
+        }
       }else{
         data = await supabaseSignInWithPassword(email, password);
       }
 
       if(data && data.access_token){
-        setAccessToken(data.access_token);
-        if(data.refresh_token) setRefreshToken(data.refresh_token);
         const sessionRes = await apiFetch(BACKEND_BASE + "/api/session", {
           method: "POST",
-          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + data.access_token }
+          headers: { "Content-Type": "application/json", "Authorization": "Bearer " + data.access_token },
+          credentials: "include"
         });
-        if(!sessionRes.ok) throw new Error("后端登录会话创建失败");
+        if(!sessionRes.ok){
+          const problem = await sessionRes.json().catch(()=>({}));
+          throw new Error(problem.message || problem.error || ("后端会话验证失败（" + sessionRes.status + "）"));
+        }
+        setAccessToken(data.access_token);
+        if(data.refresh_token) setRefreshToken(data.refresh_token);
         setSavedEmail(email);
-        authStatus.textContent = "登录成功";
+        authMessage(isRegisterMode ? "账号创建并登录成功" : "登录成功", true);
         updateAuthUI();
         await loadCloudHistory();
         setTimeout(()=> closeAuthModal(), 600);
@@ -1637,10 +1715,20 @@ if(authSubmitBtn){
       }
 
     }catch(err){
-      authStatus.textContent = "失败：" + (err.message || err);
+      setAccessToken("");
+      setRefreshToken("");
+      updateAuthUI();
+      const raw = String(err?.message || err || "登录失败");
+      const friendly = /invalid login credentials/i.test(raw) ? "邮箱或密码不正确" :
+        /email not confirmed/i.test(raw) ? "邮箱尚未验证，请先打开验证邮件" : raw;
+      authMessage("失败：" + friendly);
+    }finally{
+      authSubmitBtn.disabled = false;
     }
   });
 }
+
+setAuthMode(false);
 
 updateAuthUI();
 
