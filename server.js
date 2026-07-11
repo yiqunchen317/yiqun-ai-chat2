@@ -8,23 +8,13 @@ import { fileURLToPath } from "url";
 import cookieParser from "cookie-parser";
 import crypto from "crypto";
 import { createClient } from '@supabase/supabase-js';
-import jwt from "jsonwebtoken";
 
 import http from "http";
 import WebSocket, { WebSocketServer } from "ws";
 
-// ===== Supabase Auth user extractor =====
-function getUserIdFromReq(req){
-  try{
-    const auth = req.headers.authorization || "";
-    const token = auth.startsWith("Bearer ") ? auth.slice(7) : "";
-    if(!token) return null;
-
-    const decoded = jwt.decode(token);
-    return decoded?.sub || null;
-  }catch(e){
-    return null;
-  }
+function getBearerToken(req){
+  const auth = String(req.headers.authorization || "");
+  return auth.toLowerCase().startsWith("bearer ") ? auth.slice(7).trim() : "";
 }
 const grokHttpsAgent = new https.Agent({ keepAlive: true });
 
@@ -65,17 +55,19 @@ app.get("/index.html", (req, res) => {
 });
 
 app.get("/ai-chat.html", (req, res) => {
-  const aiChatPath = path.join(__dirname, "ai-chat.html");
-  if (fs.existsSync(aiChatPath)) return res.sendFile(aiChatPath);
-  res.status(404).send("ai-chat.html not found");
+  const indexPath = path.join(__dirname, "index.html");
+  if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
+  res.status(404).send("index.html not found");
 });
 // ===============================================
 // ===== SECURITY: Strict CORS allowlist (NO localhost / NO Origin:null) =====
 // Allow ONLY the public GitHub Pages origin and this Render service origin.
 // Do NOT allow file:// (Origin: null) or localhost.
 const ALLOWED_ORIGINS = new Set([
-  "https://yiqnuchen317.github.io",
-  "https://yiqun-ai-chat.onrender.com"
+  "https://yiqunchen317.github.io",
+  "https://yiqun-ai-chat.onrender.com",
+  "https://yiqun-ai-chat2.onrender.com",
+  ...String(process.env.ALLOWED_ORIGINS || "").split(",").map(s => s.trim()).filter(Boolean)
 ]);
 
 app.use((req, res, next) => {
@@ -113,8 +105,6 @@ function safeStr(x){
 }
 
 function getClientIp(req){
-  const xf = req.headers["x-forwarded-for"];
-  if(typeof xf === "string" && xf.trim()) return xf.split(",")[0].trim();
   return req.ip || "unknown";
 }
 
@@ -348,6 +338,23 @@ app.use((req,res,next)=>{
 // ===== INVITE-CODE ACTIVATION (user enters once; server issues httpOnly cookie session) =====
 
 const INVITE_CODE = String(process.env.INVITE_CODE || "").trim();
+const authAttempts = new Map();
+
+function secretEquals(a, b){
+  const left = Buffer.from(String(a || ""));
+  const right = Buffer.from(String(b || ""));
+  return left.length === right.length && left.length > 0 && crypto.timingSafeEqual(left, right);
+}
+
+function authRateLimited(req, failed = false){
+  const key = req.ip || "unknown";
+  const now = Date.now();
+  const item = authAttempts.get(key) || { startedAt: now, count: 0 };
+  if(now - item.startedAt > 15 * 60 * 1000){ item.startedAt = now; item.count = 0; }
+  if(failed) item.count += 1;
+  authAttempts.set(key, item);
+  return item.count > 10;
+}
 
 // ===== 天晴小宝贝：后端解锁密钥（必须二次校验） =====
 // 在 Render 环境变量里设置：TIANQING_UNLOCK_KEY
@@ -374,7 +381,7 @@ function verifyTianqingKey(req){
   if(!TIANQING_UNLOCK_KEYS.size) return false;
   const k = getTianqingKeyFromReq(req);
   if(!k) return false;
-  return TIANQING_UNLOCK_KEYS.has(k);
+  return [...TIANQING_UNLOCK_KEYS].some(expected => secretEquals(k, expected));
 }
 
 // ===== 创作者模式：后端解锁密钥（必须二次校验） =====
@@ -399,7 +406,7 @@ function verifyCreatorKey(req){
   if(!CREATOR_UNLOCK_KEYS.size) return false;
   const k = getCreatorKeyFromReq(req);
   if(!k) return false;
-  return CREATOR_UNLOCK_KEYS.has(k);
+  return [...CREATOR_UNLOCK_KEYS].some(expected => secretEquals(k, expected));
 }
 
 // ===== Signed stateless sessions (survive restarts) =====
@@ -451,16 +458,30 @@ function isHttps(req){
   return !!req.secure;
 }
 
+function setSessionCookie(res){
+  const sid = newSid();
+  if(!sid) return false;
+  res.cookie("sid", sid, {
+    httpOnly: true,
+    sameSite: "none",
+    secure: true,
+    maxAge: 1000 * 60 * 60 * 24 * 30
+  });
+  return true;
+}
+
 // POST /api/auth  { code }
 // If code matches INVITE_CODE, set sid cookie (httpOnly) and mark session activated.
 app.post("/api/auth", (req, res) => {
+  if(authRateLimited(req)) return res.status(429).json({ error: "TOO_MANY_ATTEMPTS" });
   const code = String((req.body && req.body.code) || "").trim();
   logEvent(req, "auth_attempt", { ok: false });
 
   if(!INVITE_CODE){
     return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
   }
-  if(!code || code !== INVITE_CODE){
+  if(!secretEquals(code, INVITE_CODE)){
+    authRateLimited(req, true);
     return res.status(401).json({ error: "BAD_CODE" });
   }
 
@@ -468,15 +489,7 @@ app.post("/api/auth", (req, res) => {
     return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
   }
 
-  const sid = newSid();
-
-  res.cookie("sid", sid, {
-    httpOnly: true,
-    // allow GitHub Pages -> Render cross-site requests
-    sameSite: "none",
-    secure: true,
-    maxAge: 1000 * 60 * 60 * 24 * 30 // 30 days
-  });
+  if(!setSessionCookie(res)) return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
   logEvent(req, "auth_success", { ok: true });
   return res.json({ ok: true });
 });
@@ -498,13 +511,29 @@ function getClientKey(req){
   const h = req.headers["x-api-key"];
   if(typeof h === "string" && h.trim()) return h.trim();
 
-  const auth = req.headers["authorization"];
-  if(typeof auth === "string" && auth.toLowerCase().startsWith("bearer ")){
-    return auth.slice(7).trim();
-  }
-
   return "";
 }
+
+async function getVerifiedUserId(req){
+  if(req.userId) return req.userId;
+  const token = getBearerToken(req);
+  if(!token) return null;
+  const { data, error } = await supabase.auth.getUser(token);
+  if(error || !data?.user?.id) return null;
+  req.userId = data.user.id;
+  return req.userId;
+}
+
+app.post("/api/session", async (req, res) => {
+  try{
+    const userId = await getVerifiedUserId(req);
+    if(!userId) return res.status(401).json({ error: "INVALID_TOKEN" });
+    if(!setSessionCookie(res)) return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
+    return res.json({ ok: true });
+  }catch(_e){
+    return res.status(401).json({ error: "INVALID_TOKEN" });
+  }
+});
 
 function requireApiKey(req, res, next) {
   // Admin-only gate (legacy). Prefer invite/session for normal users.
@@ -513,14 +542,14 @@ function requireApiKey(req, res, next) {
   }
 
   const k = getClientKey(req);
-  if (k && k === API_KEY) return next();
+  if (secretEquals(k, API_KEY)) return next();
 
   return res.status(401).json({ error: "Unauthorized" });
 }
 
 // Normal users: must be activated via invite code (sid cookie).
 // Admins: can still pass API_KEY (front-end only asks for it when ?admin=1).
-function requireActivatedOrApiKey(req, res, next){
+async function requireActivatedOrApiKey(req, res, next){
   const sidCookie = req.cookies && req.cookies.sid ? String(req.cookies.sid) : "";
   const raw = verifySid(sidCookie);
   if(raw){
@@ -531,8 +560,12 @@ function requireActivatedOrApiKey(req, res, next){
   // fallback: admin key
   if(API_KEY){
     const k = getClientKey(req);
-    if(k && k === API_KEY) return next();
+    if(secretEquals(k, API_KEY)){ req.isAdmin = true; return next(); }
   }
+
+  try{
+    if(await getVerifiedUserId(req)) return next();
+  }catch(_e){}
 
   return res.status(401).json({ error: "NOT_ACTIVATED" });
 }
@@ -556,9 +589,7 @@ function pruneRateMap(now){
 
 function rateLimit(type,max){
   return (req,res,next)=>{
-    const ip = (req.headers["x-forwarded-for"]
-      ? String(req.headers["x-forwarded-for"]).split(",")[0].trim()
-      : req.ip) || "unknown";
+    const ip = req.ip || "unknown";
 
     const now = Date.now();
     pruneRateMap(now);
@@ -970,14 +1001,15 @@ app.get("/api/ping", (req, res) => {
 // 2) PUT file to signedUrl  (direct to Supabase)
 // 3) POST /api/upload/url   -> returns a short-lived signed download url
 
-app.post("/api/upload/sign", rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
+app.post("/api/upload/sign", requireActivatedOrApiKey, rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
   try{
-    const { filename, contentType, bucket } = req.body || {};
+    const { filename, contentType, size } = req.body || {};
     const fn = String(filename || "").trim();
     const ct = String(contentType || "").trim();
 
     if(!fn || !ct) return res.status(400).json({ error: "filename and contentType required" });
     if(!/^image\//i.test(ct)) return res.status(400).json({ error: "Only image/* is allowed" });
+    if(Number(size || 0) > 10 * 1024 * 1024) return res.status(413).json({ error: "Image exceeds 10 MB" });
 
     // sanitize ext
     const extRaw = (fn.split(".").pop() || "jpg").toLowerCase();
@@ -985,8 +1017,9 @@ app.post("/api/upload/sign", rateLimit("upload", RATE_UPLOAD_MAX), async (req, r
 
     // create unique path
     const id = crypto.randomBytes(16).toString("hex");
-    const targetBucket = String(bucket || SUPABASE_BUCKET).trim() || SUPABASE_BUCKET;
-    const objectPath = `photos/${Date.now()}_${id}.${ext}`;
+    const targetBucket = SUPABASE_BUCKET;
+    const owner = String(req.userId || req.sid || "admin").replace(/[^a-zA-Z0-9_-]/g, "");
+    const objectPath = `photos/${owner}/${Date.now()}_${id}.${ext}`;
 
     const { data, error } = await supabase
       .storage
@@ -1008,11 +1041,14 @@ app.post("/api/upload/sign", rateLimit("upload", RATE_UPLOAD_MAX), async (req, r
   }
 });
 
-app.post("/api/upload/url", rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
+app.post("/api/upload/url", requireActivatedOrApiKey, rateLimit("upload", RATE_UPLOAD_MAX), async (req, res) => {
   try{
     const { path: p } = req.body || {};
     const objectPath = String(p || "").trim();
     if(!objectPath) return res.status(400).json({ error: "path required" });
+    if(!/^photos\/[a-zA-Z0-9_-]+\/[a-zA-Z0-9_.-]+$/.test(objectPath)) return res.status(400).json({ error: "invalid path" });
+    const owner = String(req.userId || req.sid || "admin").replace(/[^a-zA-Z0-9_-]/g, "");
+    if(!req.isAdmin && !objectPath.startsWith(`photos/${owner}/`)) return res.status(403).json({ error: "forbidden path" });
 
     // 1 hour signed download url
     const expiresIn = Number(process.env.UPLOAD_URL_EXPIRES || 3600);
@@ -1052,24 +1088,12 @@ app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX),
       ua: getUserAgent(req)
     });
 
-    const useGrok = (
-      mode === "infinity" ||
-      (typeof model === "string" && model.startsWith("grok-"))
-    );
+    const useGrok = mode === "infinity";
 
     // ⭐ 优先 Grok 图片生成
     if(useGrok){
       try{
         let grokModel = "grok-imagine-image";
-        if(typeof model === "string" && model.trim()){
-          const m = model.trim();
-          // If caller explicitly passes an image-capable xAI model id, respect it.
-          // Otherwise, don’t accidentally pass a chat/vision model into the image endpoint.
-          if(m.toLowerCase().includes("image") || m.toLowerCase().includes("imagine")){
-            grokModel = m;
-          }
-        }
-
         const img = await callGrokImage(p, grokModel);
         return res.json({ image: img, provider: "grok" });
       }catch(grokErr){
@@ -1092,7 +1116,7 @@ app.post("/api/image", requireActivatedOrApiKey, rateLimit("img", RATE_IMG_MAX),
 app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX), async (req, res) => {
   try {
     const ip = getClientIp(req);
-    const userId = getUserIdFromReq(req);
+    const userId = req.userId || await getVerifiedUserId(req);
     const sid = shortSid(req);
     const { history, mode, model, stream, tianqing_key } = req.body || {};
     const sender = getSenderFromReq(req);
@@ -1115,6 +1139,8 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 
     // ===== Determine provider + actual model used (for DB display) =====
     const modeKey = String(mode || "default").trim();
+    const allowedModes = new Set(["default", "cheap", "strong", "tianqing", "creator", "infinity"]);
+    if(!allowedModes.has(modeKey)) return res.status(400).json({ error: "invalid mode" });
     const modeLabel = getModeLabel(modeKey);
 
     // ===== Detect privacy / invisible mode =====
@@ -1311,8 +1337,8 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     // DB uses last user text (or [image])
     const lastUser = { role: "user", content: (String(lastUserNorm.text || "").trim() || "[image]") };
 
-    // ===== Save chat to Supabase =====
-    try {
+    // ===== Save chat to Supabase unless local-only privacy mode is enabled =====
+    if(!stealthOn) try {
       // First try: insert with optional columns
       const payloadFull = {
         user_text: lastUser.content,
@@ -1473,7 +1499,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
     }
 
     // If client explicitly passes `model`, respect it; otherwise pick by mode.
-    const gptModel = (typeof model === "string" && model.trim()) ? model.trim() : pickGptModelByMode(modeKey);
+    const gptModel = pickGptModelByMode(modeKey);
     modelUsed = gptModel;
     providerUsed = "openai";
 
@@ -1559,7 +1585,7 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 // ======= Chat History (per user) =======
 app.get("/api/chat/history", requireActivatedOrApiKey, async (req, res) => {
   try{
-    const userId = getUserIdFromReq(req);
+    const userId = req.userId || await getVerifiedUserId(req);
     if(!userId) return res.json({ items: [] });
 
     const { data, error } = await supabase
@@ -1604,7 +1630,7 @@ function getCookieValue(cookieHeader, name){
 function wsIsAllowed(req){
   // 1) Origin allowlist (match your CORS allowlist)
   const origin = String(req.headers.origin || "");
-  if(origin && !ALLOWED_ORIGINS.has(origin)) return false;
+  if(!origin || !ALLOWED_ORIGINS.has(origin)) return false;
 
   // 2) Activated session via sid cookie OR admin API key
   const cookie = String(req.headers.cookie || "");
@@ -1615,10 +1641,10 @@ function wsIsAllowed(req){
   // Allow admin key via header for debugging (optional)
   if(API_KEY){
     const k = String(req.headers["x-api-key"] || "").trim();
-    if(k && k === API_KEY) return true;
+    if(secretEquals(k, API_KEY)) return true;
 
     const auth = String(req.headers.authorization || "");
-    if(auth.toLowerCase().startsWith("bearer ") && auth.slice(7).trim() === API_KEY) return true;
+    if(auth.toLowerCase().startsWith("bearer ") && secretEquals(auth.slice(7).trim(), API_KEY)) return true;
   }
 
   return false;
@@ -1645,6 +1671,8 @@ const server = http.createServer(app);
 
 // We use noServer mode to validate upgrade requests ourselves
 const wss = new WebSocketServer({ noServer: true });
+const MAX_VOICE_MESSAGE_BYTES = Number(process.env.MAX_VOICE_MESSAGE_BYTES || 512000);
+const MAX_VOICE_SESSION_MS = Number(process.env.MAX_VOICE_SESSION_MS || 10 * 60 * 1000);
 
 server.on("upgrade", (req, socket, head) => {
   try{
@@ -1686,10 +1714,12 @@ wss.on("connection", (clientWs, req) => {
   let closing = false;
   let audioTurnPending = false; // 已收到用户音频，等待触发模型回复
   let pendingSessionConfig = null; // upstream 还没 open 前，先缓存 session.start 配置
+  const sessionTimer = setTimeout(() => closeAll(), MAX_VOICE_SESSION_MS);
 
   function closeAll(){
     if(closing) return;
     closing = true;
+    clearTimeout(sessionTimer);
     voiceLog("closing all", { upstreamOpen, audioTurnPending });
     try{ if(upstream) upstream.close(); }catch(e){}
     try{ clientWs.close(); }catch(e){}
@@ -1808,6 +1838,10 @@ wss.on("connection", (clientWs, req) => {
 
   // Client messages -> upstream
   clientWs.on("message", (data) => {
+    if(Buffer.byteLength(data) > MAX_VOICE_MESSAGE_BYTES){
+      wsSend(clientWs, { type: "error", message: "VOICE_MESSAGE_TOO_LARGE" });
+      return closeAll();
+    }
     const msg = safeJsonParse(data);
     if(!msg) return;
 
@@ -1823,7 +1857,10 @@ wss.on("connection", (clientWs, req) => {
       const voice = String(msg.voice || process.env.GROK_VOICE || "Eve");
       const inFmt = String(msg.input_audio_format || "pcm16");
       const outFmt = String(msg.output_audio_format || "pcm16");
-      const modelName = String(msg.model || process.env.GROK_VOICE_MODEL || "grok-4").trim();
+      const requestedModel = String(msg.model || "").trim();
+      const modelName = requestedModel.startsWith("grok-")
+        ? requestedModel
+        : String(process.env.GROK_VOICE_MODEL || "grok-4").trim();
 
       pendingSessionConfig = {
         model: modelName,
