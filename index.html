@@ -190,6 +190,26 @@ header{
 #authModal .tinyLink:hover{ text-decoration:underline; text-underline-offset:3px; }
 #authModal .status{ margin-top:10px; font-size:12px; color:#e2e8f0; opacity:0.9; min-height:18px; white-space:pre-line; }
 
+#activationModal{
+  position:fixed; inset:0; display:none; align-items:center; justify-content:center; z-index:150;
+}
+#activationModal.show{ display:flex; }
+#activationModal .backdrop{ position:absolute; inset:0; background:rgba(0,0,0,0.62); }
+#activationModal .panel{
+  position:relative; width:min(440px, calc(100vw - 32px)); padding:18px;
+  background:rgba(15,23,42,0.98); border:1px solid rgba(255,255,255,0.12);
+  border-radius:16px; box-shadow:0 22px 60px rgba(0,0,0,0.5);
+}
+#activationModal h3{ margin:0 0 8px; }
+#activationModal .muted{ margin:0 0 12px; color:#cbd5e1; font-size:13px; line-height:1.45; }
+#activationModal input{
+  box-sizing:border-box; width:100%; padding:12px 14px; font-size:16px;
+  border:1px solid rgba(255,255,255,0.12); border-radius:12px;
+  background:rgba(2,6,23,0.7); color:white;
+}
+#activationModal .status{ min-height:20px; margin-top:8px; color:#fca5a5; font-size:12px; }
+#activationModal .row{ display:flex; justify-content:flex-end; gap:10px; margin-top:12px; }
+
 .headerActions{
     display:flex;
     align-items:center;
@@ -884,6 +904,20 @@ transform: translateY(-4px);
   </div>
 </div>
 
+<div id="activationModal" role="dialog" aria-modal="true" aria-labelledby="activationTitle">
+  <div class="backdrop" id="activationBackdrop"></div>
+  <div class="panel">
+    <h3 id="activationTitle">首次激活</h3>
+    <p class="muted">这是新的独立服务，需要在此域名输入一次邀请码。激活信息会安全保存在 HttpOnly Cookie 中。</p>
+    <input id="activationCode" type="password" placeholder="请输入邀请码" autocomplete="one-time-code" />
+    <div class="status" id="activationStatus"></div>
+    <div class="row">
+      <button class="chipBtn danger" id="activationCancel" type="button">取消</button>
+      <button class="chipBtn" id="activationSubmit" type="button">激活</button>
+    </div>
+  </div>
+</div>
+
 <div id="layout">
   <aside id="sidebar">
     <div class="sideTop">
@@ -1437,6 +1471,12 @@ const authSwitch = document.getElementById("authSwitch");
 const authTitle = document.getElementById("authTitle");
 const authHint = document.getElementById("authHint");
 const authStatus = document.getElementById("authStatus");
+const activationModal = document.getElementById("activationModal");
+const activationBackdrop = document.getElementById("activationBackdrop");
+const activationCode = document.getElementById("activationCode");
+const activationStatus = document.getElementById("activationStatus");
+const activationCancel = document.getElementById("activationCancel");
+const activationSubmit = document.getElementById("activationSubmit");
 
 let isRegisterMode = false;
 
@@ -2216,7 +2256,12 @@ if(!hasPhoto && /^\/(img|图)\s+/i.test(text)){
             render();
             return;
         }
-        reply = "我连不上真正AI（" + (err && err.message ? err.message : String(err)) + "）。\n先用离线伪AI回复：" + (await fakeAI(text));
+        const errorText = err && err.message ? err.message : String(err);
+        if(/邀请码|未授权|NOT_ACTIVATED|401/.test(errorText)){
+          reply = "需要完成邀请码激活后才能连接在线 AI。请再次发送消息并在弹窗中输入邀请码。";
+        }else{
+          reply = "在线 AI 暂时不可用（" + errorText + "）。\n离线回复：" + (await fakeAI(text));
+        }
     }
 
     const last = history[history.length - 1];
@@ -2957,26 +3002,56 @@ function authHeaders(){
 
 // ======= 邀请码激活（后端稍后会加 /api/auth；现在先把前端准备好） =======
 async function ensureActivatedOnce(){
-  const code = String(prompt("请输入邀请码（仅首次激活一次）：") || "").trim();
-  if(!code) throw new Error("未输入邀请码");
+  if(!activationModal) throw new Error("激活窗口不可用");
+  activationStatus.textContent = "";
+  activationCode.value = "";
+  activationSubmit.disabled = false;
+  activationModal.classList.add("show");
+  setTimeout(() => activationCode.focus(), 50);
 
-  const r = await apiFetch(BACKEND_BASE + "/api/auth", {
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  body: JSON.stringify({ code })
-});
-
-  if(!r.ok){
-    const t = await r.text().catch(()=> "");
-    throw new Error("邀请码验证失败：" + r.status + " " + t);
-  }
-  // 邀请码通过后：首次弹出“自定义名字”
-  try{
-    if(String(localStorage.getItem(USER_NAME_SET_ONCE_KEY) || "") !== "1"){
-      openNameModal(true);
-    }
-  }catch(e){}
-  return true;
+  return await new Promise((resolve, reject) => {
+    const close = () => {
+      activationModal.classList.remove("show");
+      activationSubmit.onclick = null;
+      activationCancel.onclick = null;
+      activationBackdrop.onclick = null;
+      activationCode.onkeydown = null;
+    };
+    const cancel = () => { close(); reject(new Error("需要邀请码才能连接在线 AI")); };
+    const submit = async () => {
+      const code = String(activationCode.value || "").trim();
+      if(!code){ activationStatus.textContent = "请输入邀请码"; return; }
+      activationSubmit.disabled = true;
+      activationStatus.textContent = "正在验证…";
+      try{
+        const r = await apiFetch(BACKEND_BASE + "/api/auth", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code })
+        });
+        if(!r.ok){
+          const data = await r.json().catch(() => ({}));
+          activationStatus.textContent = data.error === "BAD_CODE" ? "邀请码错误" : "验证失败，请稍后重试";
+          activationSubmit.disabled = false;
+          return;
+        }
+        close();
+        try{
+          if(String(localStorage.getItem(USER_NAME_SET_ONCE_KEY) || "") !== "1") openNameModal(true);
+        }catch(_e){}
+        resolve(true);
+      }catch(_e){
+        activationStatus.textContent = "网络错误，请稍后重试";
+        activationSubmit.disabled = false;
+      }
+    };
+    activationSubmit.onclick = submit;
+    activationCancel.onclick = cancel;
+    activationBackdrop.onclick = cancel;
+    activationCode.onkeydown = (event) => {
+      if(event.key === "Enter"){ event.preventDefault(); submit(); }
+    };
+  });
 }
 
 function closeImgModal(){
@@ -3244,7 +3319,8 @@ async function callAI(msg, modeLocked = currentModelMode){
           await ensureActivatedOnce();
           return await callAI(msg, modeLocked);
         }catch(e){
-          // continue to readable error
+          __activationTried = false;
+          throw e;
         }
       }
 
@@ -3257,6 +3333,8 @@ async function callAI(msg, modeLocked = currentModelMode){
     const t = await r.text().catch(()=>" ");
     throw new Error("后端错误：" + r.status + " " + t);
   }
+
+  __activationTried = false;
 
   const ct = (r.headers.get("content-type") || "").toLowerCase();
 

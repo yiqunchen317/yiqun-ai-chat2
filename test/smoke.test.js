@@ -41,3 +41,9 @@ test("frontend targets the new service and caps context", () => {
   assert.match(index, /MAX_CONTEXT_MESSAGES = 50/);
   assert.match(index, /https:\/\/yiqun-ai-chat2\.onrender\.com/);
 });
+
+test("401 activation uses an in-page modal instead of prompt fallback", () => {
+  assert.match(index, /id="activationModal"/);
+  assert.match(index, /activationModal\.classList\.add\("show"\)/);
+  assert.doesNotMatch(index, /prompt\("请输入邀请码/);
+});
