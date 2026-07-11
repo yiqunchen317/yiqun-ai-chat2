@@ -30,8 +30,9 @@ test("ES256 Supabase tokens are verified by GoTrue instead of local JWKS cache",
 
 test("ES256 verification falls back to the project's current JWKS key", () => {
   assert.match(server, /\.well-known\/jwks\.json/);
-  assert.match(server, /crypto\.verify\(/);
-  assert.match(server, /dsaEncoding: "ieee-p1363"/);
+  assert.match(server, /crypto\.webcrypto\.subtle\.importKey/);
+  assert.match(server, /crypto\.webcrypto\.subtle\.verify/);
+  assert.match(server, /name: "ECDSA", hash: "SHA-256"/);
   assert.match(server, /payload\.iss !== `\$\{SUPABASE_URL\}\/auth\/v1`/);
   assert.match(server, /supabase\.auth\.admin\.getUserById\(verifiedSub\)/);
 });
