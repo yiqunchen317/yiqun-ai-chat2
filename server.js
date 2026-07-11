@@ -519,7 +519,10 @@ async function getVerifiedUserId(req){
   const token = getBearerToken(req);
   if(!token) return null;
   const { data, error } = await supabase.auth.getUser(token);
-  if(error || !data?.user?.id) return null;
+  if(error || !data?.user?.id){
+    console.warn("[auth verify failed]", error?.message || "missing user");
+    return null;
+  }
   req.userId = data.user.id;
   return req.userId;
 }
@@ -530,8 +533,9 @@ app.post("/api/session", async (req, res) => {
     if(!userId) return res.status(401).json({ error: "INVALID_TOKEN" });
     if(!setSessionCookie(res)) return res.status(500).json({ error: "SERVER_NOT_CONFIGURED" });
     return res.json({ ok: true });
-  }catch(_e){
-    return res.status(401).json({ error: "INVALID_TOKEN" });
+  }catch(e){
+    console.warn("[session create failed]", e?.message || e);
+    return res.status(401).json({ error: "INVALID_TOKEN", message: "登录凭证验证失败，请重新登录" });
   }
 });
 

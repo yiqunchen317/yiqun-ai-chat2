@@ -30,7 +30,8 @@ test("upload endpoints require authentication", () => {
 
 test("verified login creates a voice-capable session cookie", () => {
   assert.match(server, /app\.post\("\/api\/session"/);
-  assert.match(index, /后端登录会话创建失败/);
+  assert.match(index, /后端会话验证失败/);
+  assert.match(index, /setAccessToken\(data\.access_token\)/);
 });
 
 test("privacy mode prevents server-side chat persistence", () => {
@@ -54,4 +55,12 @@ test("Chat2 uses its own Supabase project and full cloud sessions", () => {
   assert.match(server, /app\.get\("\/api\/chat\/sessions"/);
   assert.match(server, /app\.put\("\/api\/chat\/sessions\/:id"/);
   assert.match(server, /app\.delete\("\/api\/chat\/sessions\/:id"/);
+});
+
+test("registration validates confirmation and login failure clears stale tokens", () => {
+  assert.match(index, /authConfirmPassword/);
+  assert.match(index, /两次输入的密码不一致/);
+  assert.match(index, /密码至少 8 位/);
+  assert.match(index, /catch\(err\)[\s\S]*setAccessToken\(""\)/);
+  assert.doesNotMatch(index, /alert\("已退出登录"\)/);
 });
