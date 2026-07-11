@@ -19,7 +19,13 @@ test("inline frontend JavaScript parses", () => {
 
 test("authentication never trusts an unverified JWT payload", () => {
   assert.doesNotMatch(server, /jwt\.decode|jsonwebtoken/);
-  assert.match(server, /supabase\.auth\.getUser\(token\)/);
+  assert.match(server, /\/auth\/v1\/user/);
+  assert.match(server, /Authorization: `Bearer \$\{token\}`/);
+});
+
+test("ES256 Supabase tokens are verified by GoTrue instead of local JWKS cache", () => {
+  assert.match(server, /Ask GoTrue to validate the token server-side/);
+  assert.match(server, /if\(!authRes\.ok \|\| !user\?\.id\)/);
 });
 
 test("upload endpoints require authentication", () => {
