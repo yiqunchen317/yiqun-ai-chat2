@@ -530,10 +530,64 @@ async function getVerifiedUserId(req){
   const user = await authRes.json().catch(() => null);
   if(!authRes.ok || !user?.id){
     console.warn("[auth verify failed]", authRes.status, user?.message || user?.msg || "missing user");
-    return null;
+    const verifiedSub = await verifySupabaseJwtWithJwks(token);
+    if(!verifiedSub) return null;
+    const { data: adminUser, error: adminError } = await supabase.auth.admin.getUserById(verifiedSub);
+    if(adminError || !adminUser?.user?.id){
+      console.warn("[auth user lookup failed]", adminError?.message || "missing user");
+      return null;
+    }
+    req.userId = adminUser.user.id;
+    return req.userId;
   }
   req.userId = user.id;
   return req.userId;
+}
+
+let jwksCache = { expiresAt: 0, keys: [] };
+function decodeJwtPart(part){
+  return JSON.parse(Buffer.from(String(part || ""), "base64url").toString("utf8"));
+}
+
+async function getSupabaseJwks(){
+  if(jwksCache.expiresAt > Date.now() && jwksCache.keys.length) return jwksCache.keys;
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`);
+  if(!response.ok) throw new Error(`JWKS_HTTP_${response.status}`);
+  const body = await response.json();
+  const keys = Array.isArray(body?.keys) ? body.keys : [];
+  if(!keys.length) throw new Error("JWKS_EMPTY");
+  jwksCache = { expiresAt: Date.now() + 5 * 60 * 1000, keys };
+  return keys;
+}
+
+async function verifySupabaseJwtWithJwks(token){
+  try{
+    const parts = String(token || "").split(".");
+    if(parts.length !== 3) return null;
+    const header = decodeJwtPart(parts[0]);
+    const payload = decodeJwtPart(parts[1]);
+    if(header.alg !== "ES256" || !header.kid) return null;
+    const keys = await getSupabaseJwks();
+    const jwk = keys.find((key) => key.kid === header.kid && key.kty === "EC" && key.crv === "P-256");
+    if(!jwk) return null;
+    const publicKey = crypto.createPublicKey({ key: jwk, format: "jwk" });
+    const validSignature = crypto.verify(
+      "sha256",
+      Buffer.from(`${parts[0]}.${parts[1]}`),
+      { key: publicKey, dsaEncoding: "ieee-p1363" },
+      Buffer.from(parts[2], "base64url")
+    );
+    if(!validSignature) return null;
+    const now = Math.floor(Date.now() / 1000);
+    if(!payload.sub || payload.iss !== `${SUPABASE_URL}/auth/v1`) return null;
+    if(payload.exp && Number(payload.exp) <= now) return null;
+    if(payload.nbf && Number(payload.nbf) > now + 30) return null;
+    if(payload.aud && payload.aud !== "authenticated") return null;
+    return String(payload.sub);
+  }catch(error){
+    console.warn("[JWKS verify failed]", error?.message || error);
+    return null;
+  }
 }
 
 app.post("/api/session", async (req, res) => {

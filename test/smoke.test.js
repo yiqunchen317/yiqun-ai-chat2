@@ -28,6 +28,14 @@ test("ES256 Supabase tokens are verified by GoTrue instead of local JWKS cache",
   assert.match(server, /if\(!authRes\.ok \|\| !user\?\.id\)/);
 });
 
+test("ES256 verification falls back to the project's current JWKS key", () => {
+  assert.match(server, /\.well-known\/jwks\.json/);
+  assert.match(server, /crypto\.verify\(/);
+  assert.match(server, /dsaEncoding: "ieee-p1363"/);
+  assert.match(server, /payload\.iss !== `\$\{SUPABASE_URL\}\/auth\/v1`/);
+  assert.match(server, /supabase\.auth\.admin\.getUserById\(verifiedSub\)/);
+});
+
 test("upload endpoints require authentication", () => {
   assert.match(server, /app\.post\("\/api\/upload\/sign", requireActivatedOrApiKey/);
   assert.match(server, /app\.post\("\/api\/upload\/url", requireActivatedOrApiKey/);
