@@ -23,10 +23,9 @@ console.log("🚀 Loaded server.js at", new Date().toISOString());
 const app = express();
 
 // ===== Supabase Client (required on Render) =====
-const supabase = createClient(
-  process.env.SUPABASE_URL,
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-);
+const SUPABASE_URL = String(process.env.SUPABASE_URL || "").replace(/\/+$/, "");
+const SUPABASE_SERVICE_ROLE_KEY = String(process.env.SUPABASE_SERVICE_ROLE_KEY || "").trim();
+const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY);
 const SUPABASE_BUCKET = String(process.env.SUPABASE_BUCKET || "uploads").trim() || "uploads";
 
 // ===== SECURITY: trust proxy so IP works on Render =====
@@ -518,12 +517,22 @@ async function getVerifiedUserId(req){
   if(req.userId) return req.userId;
   const token = getBearerToken(req);
   if(!token) return null;
-  const { data, error } = await supabase.auth.getUser(token);
-  if(error || !data?.user?.id){
-    console.warn("[auth verify failed]", error?.message || "missing user");
+  // Ask GoTrue to validate the token server-side. This supports projects using
+  // asymmetric ES256 signing keys even when the SDK's local JWKS cache has not
+  // learned the new `kid` yet.
+  const authRes = await fetch(`${SUPABASE_URL}/auth/v1/user`, {
+    method: "GET",
+    headers: {
+      apikey: SUPABASE_SERVICE_ROLE_KEY,
+      Authorization: `Bearer ${token}`,
+    },
+  });
+  const user = await authRes.json().catch(() => null);
+  if(!authRes.ok || !user?.id){
+    console.warn("[auth verify failed]", authRes.status, user?.message || user?.msg || "missing user");
     return null;
   }
-  req.userId = data.user.id;
+  req.userId = user.id;
   return req.userId;
 }
 
