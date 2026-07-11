@@ -563,26 +563,30 @@ async function getSupabaseJwks(){
 async function verifySupabaseJwtWithJwks(token){
   try{
     const parts = String(token || "").split(".");
-    if(parts.length !== 3) return null;
+    if(parts.length !== 3){ console.warn("[JWKS reject] parts"); return null; }
     const header = decodeJwtPart(parts[0]);
     const payload = decodeJwtPart(parts[1]);
-    if(header.alg !== "ES256" || !header.kid) return null;
+    if(header.alg !== "ES256" || !header.kid){ console.warn("[JWKS reject] header"); return null; }
     const keys = await getSupabaseJwks();
     const jwk = keys.find((key) => key.kid === header.kid && key.kty === "EC" && key.crv === "P-256");
-    if(!jwk) return null;
-    const publicKey = crypto.createPublicKey({ key: jwk, format: "jwk" });
-    const validSignature = crypto.verify(
-      "sha256",
-      Buffer.from(`${parts[0]}.${parts[1]}`),
-      { key: publicKey, dsaEncoding: "ieee-p1363" },
-      Buffer.from(parts[2], "base64url")
+    if(!jwk){ console.warn("[JWKS reject] kid"); return null; }
+    const publicKey = await crypto.webcrypto.subtle.importKey(
+      "jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]
     );
-    if(!validSignature) return null;
+    const validSignature = await crypto.webcrypto.subtle.verify(
+      { name: "ECDSA", hash: "SHA-256" },
+      publicKey,
+      Buffer.from(parts[2], "base64url"),
+      Buffer.from(`${parts[0]}.${parts[1]}`)
+    );
+    if(!validSignature){ console.warn("[JWKS reject] signature"); return null; }
     const now = Math.floor(Date.now() / 1000);
-    if(!payload.sub || payload.iss !== `${SUPABASE_URL}/auth/v1`) return null;
-    if(payload.exp && Number(payload.exp) <= now) return null;
-    if(payload.nbf && Number(payload.nbf) > now + 30) return null;
-    if(payload.aud && payload.aud !== "authenticated") return null;
+    if(!payload.sub || payload.iss !== `${SUPABASE_URL}/auth/v1`){ console.warn("[JWKS reject] issuer"); return null; }
+    if(payload.exp && Number(payload.exp) <= now){ console.warn("[JWKS reject] expired"); return null; }
+    if(payload.nbf && Number(payload.nbf) > now + 30){ console.warn("[JWKS reject] not-before"); return null; }
+    const audiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+    if(payload.aud && !audiences.includes("authenticated")){ console.warn("[JWKS reject] audience"); return null; }
+    console.log("[JWKS verify ok]", String(payload.sub).slice(0, 8));
     return String(payload.sub);
   }catch(error){
     console.warn("[JWKS verify failed]", error?.message || error);
