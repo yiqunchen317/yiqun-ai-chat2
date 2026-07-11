@@ -549,9 +549,12 @@ function decodeJwtPart(part){
   return JSON.parse(Buffer.from(String(part || ""), "base64url").toString("utf8"));
 }
 
-async function getSupabaseJwks(){
-  if(jwksCache.expiresAt > Date.now() && jwksCache.keys.length) return jwksCache.keys;
-  const response = await fetch(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json`);
+async function getSupabaseJwks(forceRefresh = false){
+  if(!forceRefresh && jwksCache.expiresAt > Date.now() && jwksCache.keys.length) return jwksCache.keys;
+  const cacheBust = forceRefresh ? `?refresh=${Date.now()}` : "";
+  const response = await fetch(`${SUPABASE_URL}/auth/v1/.well-known/jwks.json${cacheBust}`, {
+    headers: { "Cache-Control": "no-cache", Pragma: "no-cache" },
+  });
   if(!response.ok) throw new Error(`JWKS_HTTP_${response.status}`);
   const body = await response.json();
   const keys = Array.isArray(body?.keys) ? body.keys : [];
@@ -567,8 +570,12 @@ async function verifySupabaseJwtWithJwks(token){
     const header = decodeJwtPart(parts[0]);
     const payload = decodeJwtPart(parts[1]);
     if(header.alg !== "ES256" || !header.kid){ console.warn("[JWKS reject] header"); return null; }
-    const keys = await getSupabaseJwks();
-    const jwk = keys.find((key) => key.kid === header.kid && key.kty === "EC" && key.crv === "P-256");
+    let keys = await getSupabaseJwks();
+    let jwk = keys.find((key) => key.kid === header.kid && key.kty === "EC" && key.crv === "P-256");
+    if(!jwk){
+      keys = await getSupabaseJwks(true);
+      jwk = keys.find((key) => key.kid === header.kid && key.kty === "EC" && key.crv === "P-256");
+    }
     if(!jwk){ console.warn("[JWKS reject] kid"); return null; }
     const publicKey = await crypto.webcrypto.subtle.importKey(
       "jwk", jwk, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]

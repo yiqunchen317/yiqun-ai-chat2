@@ -35,6 +35,8 @@ test("ES256 verification falls back to the project's current JWKS key", () => {
   assert.match(server, /name: "ECDSA", hash: "SHA-256"/);
   assert.match(server, /payload\.iss !== `\$\{SUPABASE_URL\}\/auth\/v1`/);
   assert.match(server, /supabase\.auth\.admin\.getUserById\(verifiedSub\)/);
+  assert.match(server, /getSupabaseJwks\(true\)/);
+  assert.match(server, /Cache-Control": "no-cache"/);
 });
 
 test("upload endpoints require authentication", () => {
