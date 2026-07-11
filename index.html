@@ -1009,6 +1009,7 @@ function setPrivacyMode(on){
         sessions = loadSessions();
         renderSessionList();
         render();
+        if(getAccessToken()) loadCloudHistory();
     }
 }
 
@@ -1491,33 +1492,52 @@ function closeAuthModal(){
   authModal.classList.remove("show");
 }
 
+let cloudSyncTimer = null;
+
+async function syncSessionToCloud(session){
+  if(privacyMode || !getAccessToken() || !session || !session.id) return;
+  const res = await fetch(BACKEND_BASE + "/api/chat/sessions/" + encodeURIComponent(session.id), {
+    method: "PUT",
+    headers: authHeaders(),
+    credentials: "include",
+    body: JSON.stringify({
+      title: session.title || "新聊天",
+      created_at: new Date(session.createdAt || Date.now()).toISOString(),
+      messages: Array.isArray(session.messages) ? session.messages : []
+    })
+  });
+  if(!res.ok) throw new Error("云端保存失败：" + res.status);
+}
+
+function scheduleCloudSync(session){
+  if(privacyMode || !getAccessToken() || !session) return;
+  clearTimeout(cloudSyncTimer);
+  cloudSyncTimer = setTimeout(()=>{
+    syncSessionToCloud(session).catch(e=>console.log("⚠️ 云端保存失败:", e.message));
+  }, 350);
+}
+
 // ===== 云聊天记录加载 =====
 async function loadCloudHistory(){
   try{
-    if(!getAccessToken()) return;
-    const res = await fetch(BACKEND_BASE + "/api/chat/history", {
+    if(!getAccessToken() || privacyMode) return;
+    const res = await fetch(BACKEND_BASE + "/api/chat/sessions", {
       method: "GET",
       headers: authHeaders(),
       credentials: "include"
     });
 
     const data = await res.json();
-    if(!data || !Array.isArray(data.items)) return;
-
-    // 清空当前 UI
-    history = [];
-    chat.innerHTML = "";
-
-    for(const item of data.items){
-      if(!item || !item.user_text) continue;
-
-      history.push({ id: msgId(), role: "user", text: item.user_text,
-        ts: Date.parse(item.created_at || "") || Date.now(), mode: "history" });
-    }
-
-    render();
-
-    console.log("✅ 云聊天加载完成:", data.items.length);
+    if(!res.ok || !data || !Array.isArray(data.items)) return;
+    sessions = data.items.map(s=>({
+      id: String(s.id),
+      title: s.title || "新聊天",
+      createdAt: Date.parse(s.created_at || "") || Date.now(),
+      messages: Array.isArray(s.messages) ? s.messages : []
+    }));
+    saveSessions(sessions);
+    renderSessionList();
+    console.log("✅ 云聊天加载完成:", sessions.length);
 
   }catch(e){
     console.log("⚠️ 云聊天加载失败:", e.message);
@@ -1658,6 +1678,11 @@ history.forEach(m => { if(m && m.id) seenMessageIds.add(m.id); });
 function deleteSession(id){
     sessions = sessions.filter(s=>s.id!==id);
     saveSessions(sessions);
+    if(getAccessToken() && !privacyMode){
+      fetch(BACKEND_BASE + "/api/chat/sessions/" + encodeURIComponent(id), {
+        method: "DELETE", headers: authHeaders(), credentials: "include"
+      }).catch(()=>{});
+    }
 
     // 如果删的是当前会话，就立刻新建一个
     if(currentSessionId === id){
@@ -1684,6 +1709,7 @@ function syncCurrentToStorage(){
 
     saveSessions(sessions);
     renderSessionList();
+    scheduleCloudSync(s);
 }
 
 function renderSessionList(){
@@ -2883,8 +2909,8 @@ const API_KEY_STORAGE = "yiqun_api_key";
 // TODO: 你自己把下面两项换成你的 Supabase 项目配置：
 // - SUPABASE_URL: 形如 https://xxxx.supabase.co
 // - SUPABASE_ANON_KEY: Supabase -> Project Settings -> API -> anon public
-const SUPABASE_URL = "https://pnqmcqnvxoenuwukutiq.supabase.co";
-const SUPABASE_ANON_KEY = "sb_publishable_4MmaSjGmBTAwRcAUJjZQgQ_NTQx8XUr";
+const SUPABASE_URL = "https://jxkzhiwjfqwemnljytvt.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_aoh51DS1RWshlptFA5xTMQ_NSvTAjL5";
 
 const AUTH_TOKEN_KEY = "yq_auth_access_token";
 const AUTH_REFRESH_KEY = "yq_auth_refresh_token";

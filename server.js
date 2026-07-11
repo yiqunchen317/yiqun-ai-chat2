@@ -1582,7 +1582,109 @@ app.post("/api/chat", requireActivatedOrApiKey, rateLimit("chat", RATE_CHAT_MAX)
 });
 
 
-// ======= Chat History (per user) =======
+// ======= Full chat sessions (per authenticated Supabase user) =======
+function normalizeStoredMessages(messages){
+  if(!Array.isArray(messages)) return [];
+  return messages.slice(-200).map((m) => ({
+    id: String(m?.id || crypto.randomUUID()).slice(0, 100),
+    role: m?.role === "ai" || m?.role === "assistant" ? "ai" : "user",
+    text: String(m?.text || "").slice(0, 100000),
+    ts: Number.isFinite(Number(m?.ts)) ? Number(m.ts) : Date.now(),
+    mode: String(m?.mode || "cheap").slice(0, 40),
+    ...(m?.imageUrl ? { imageUrl: String(m.imageUrl).slice(0, 4000) } : {})
+  }));
+}
+
+app.get("/api/chat/sessions", requireActivatedOrApiKey, async (req, res) => {
+  try{
+    const userId = req.userId || await getVerifiedUserId(req);
+    if(!userId) return res.status(401).json({ error: "LOGIN_REQUIRED" });
+    const { data: sessionRows, error: sessionError } = await supabase
+      .from("chat_sessions")
+      .select("id,title,created_at,updated_at")
+      .eq("user_id", userId)
+      .order("updated_at", { ascending: false })
+      .limit(100);
+    if(sessionError) throw sessionError;
+    const ids = (sessionRows || []).map((s) => s.id);
+    let messageRows = [];
+    if(ids.length){
+      const { data, error } = await supabase
+        .from("chat_messages")
+        .select("id,session_id,role,content,image_url,client_ts,mode,created_at")
+        .eq("user_id", userId)
+        .in("session_id", ids)
+        .order("created_at", { ascending: true });
+      if(error) throw error;
+      messageRows = data || [];
+    }
+    const grouped = new Map();
+    for(const m of messageRows){
+      if(!grouped.has(m.session_id)) grouped.set(m.session_id, []);
+      grouped.get(m.session_id).push({
+        id: m.id,
+        role: m.role === "assistant" ? "ai" : "user",
+        text: m.content || "",
+        ts: Number(m.client_ts) || Date.parse(m.created_at) || Date.now(),
+        mode: m.mode || "cheap",
+        ...(m.image_url ? { imageUrl: m.image_url } : {})
+      });
+    }
+    return res.json({ items: (sessionRows || []).map((s) => ({ ...s, messages: grouped.get(s.id) || [] })) });
+  }catch(e){
+    return res.status(500).json({ error: e?.message || "session history error" });
+  }
+});
+
+app.put("/api/chat/sessions/:id", requireActivatedOrApiKey, async (req, res) => {
+  try{
+    const userId = req.userId || await getVerifiedUserId(req);
+    if(!userId) return res.status(401).json({ error: "LOGIN_REQUIRED" });
+    const sessionId = String(req.params.id || "").trim();
+    if(!/^[A-Za-z0-9_-]{8,100}$/.test(sessionId)) return res.status(400).json({ error: "BAD_SESSION_ID" });
+    const { data: existing, error: existingError } = await supabase.from("chat_sessions")
+      .select("user_id").eq("id", sessionId).maybeSingle();
+    if(existingError) throw existingError;
+    if(existing && existing.user_id !== userId) return res.status(403).json({ error: "FORBIDDEN" });
+    const title = String(req.body?.title || "新聊天").trim().slice(0, 120) || "新聊天";
+    const createdAt = Number.isFinite(Date.parse(req.body?.created_at)) ? req.body.created_at : new Date().toISOString();
+    const messages = normalizeStoredMessages(req.body?.messages);
+    const { error: upsertError } = await supabase.from("chat_sessions").upsert({
+      id: sessionId, user_id: userId, title, created_at: createdAt, updated_at: new Date().toISOString()
+    }, { onConflict: "id" });
+    if(upsertError) throw upsertError;
+    const { error: deleteError } = await supabase.from("chat_messages")
+      .delete().eq("session_id", sessionId).eq("user_id", userId);
+    if(deleteError) throw deleteError;
+    if(messages.length){
+      const rows = messages.map((m) => ({
+        id: m.id, session_id: sessionId, user_id: userId,
+        role: m.role === "ai" ? "assistant" : "user", content: m.text,
+        image_url: m.imageUrl || null, client_ts: m.ts, mode: m.mode
+      }));
+      const { error } = await supabase.from("chat_messages").insert(rows);
+      if(error) throw error;
+    }
+    return res.json({ ok: true });
+  }catch(e){
+    return res.status(500).json({ error: e?.message || "session save error" });
+  }
+});
+
+app.delete("/api/chat/sessions/:id", requireActivatedOrApiKey, async (req, res) => {
+  try{
+    const userId = req.userId || await getVerifiedUserId(req);
+    if(!userId) return res.status(401).json({ error: "LOGIN_REQUIRED" });
+    const sessionId = String(req.params.id || "").trim();
+    const { error } = await supabase.from("chat_sessions").delete().eq("id", sessionId).eq("user_id", userId);
+    if(error) throw error;
+    return res.json({ ok: true });
+  }catch(e){
+    return res.status(500).json({ error: e?.message || "session delete error" });
+  }
+});
+
+// ======= Legacy prompt-only chat history (per user) =======
 app.get("/api/chat/history", requireActivatedOrApiKey, async (req, res) => {
   try{
     const userId = req.userId || await getVerifiedUserId(req);
