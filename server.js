@@ -67,6 +67,16 @@ app.get("/ai-chat.html", (req, res) => {
   if (fs.existsSync(indexPath)) return res.sendFile(indexPath);
   res.status(404).send("index.html not found");
 });
+
+// Frontend assets split out of index.html. Keep the allowlist explicit so
+// backend source and configuration files are never exposed.
+app.get("/styles.css", (req, res) => {
+  res.sendFile(path.join(__dirname, "styles.css"));
+});
+
+app.get("/app.js", (req, res) => {
+  res.sendFile(path.join(__dirname, "app.js"));
+});
 // ===============================================
 // ===== SECURITY: Strict CORS allowlist (NO localhost / NO Origin:null) =====
 // Allow ONLY the public GitHub Pages origin and this Render service origin.

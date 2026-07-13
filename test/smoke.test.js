@@ -5,16 +5,21 @@ import vm from "node:vm";
 
 const server = fs.readFileSync(new URL("../server.js", import.meta.url), "utf8");
 const index = fs.readFileSync(new URL("../index.html", import.meta.url), "utf8");
+const app = fs.readFileSync(new URL("../app.js", import.meta.url), "utf8");
+const styles = fs.readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const alternate = fs.readFileSync(new URL("../ai-chat.html", import.meta.url), "utf8");
 
 test("legacy frontend URL redirects to the canonical page", () => {
   assert.match(alternate, /\.\/index\.html/);
 });
 
-test("inline frontend JavaScript parses", () => {
-  const match = index.match(/<script>([\s\S]*)<\/script>/);
-  assert.ok(match, "inline app script is present");
-  assert.doesNotThrow(() => new vm.Script(match[1]));
+test("split frontend assets are linked, served, and JavaScript parses", () => {
+  assert.match(index, /<link rel="stylesheet" href="\.\/styles\.css"/);
+  assert.match(index, /<script src="\.\/app\.js"><\/script>/);
+  assert.match(server, /app\.get\("\/styles\.css"/);
+  assert.match(server, /app\.get\("\/app\.js"/);
+  assert.ok(styles.length > 0, "split stylesheet is present");
+  assert.doesNotThrow(() => new vm.Script(app));
 });
 
 test("authentication never trusts an unverified JWT payload", () => {
@@ -48,8 +53,8 @@ test("upload endpoints require authentication", () => {
 
 test("verified login creates a voice-capable session cookie", () => {
   assert.match(server, /app\.post\("\/api\/session"/);
-  assert.match(index, /后端会话验证失败/);
-  assert.match(index, /setAccessToken\(data\.access_token\)/);
+  assert.match(app, /后端会话验证失败/);
+  assert.match(app, /setAccessToken\(data\.access_token\)/);
 });
 
 test("privacy mode prevents server-side chat persistence", () => {
@@ -57,28 +62,28 @@ test("privacy mode prevents server-side chat persistence", () => {
 });
 
 test("frontend targets the new service and caps context", () => {
-  assert.match(index, /MAX_CONTEXT_MESSAGES = 50/);
-  assert.match(index, /https:\/\/yiqun-ai-chat2\.onrender\.com/);
+  assert.match(app, /MAX_CONTEXT_MESSAGES = 50/);
+  assert.match(app, /https:\/\/yiqun-ai-chat2\.onrender\.com/);
 });
 
 test("401 activation uses an in-page modal instead of prompt fallback", () => {
   assert.match(index, /id="activationModal"/);
-  assert.match(index, /activationModal\.classList\.add\("show"\)/);
-  assert.doesNotMatch(index, /prompt\("请输入邀请码/);
+  assert.match(app, /activationModal\.classList\.add\("show"\)/);
+  assert.doesNotMatch(app, /prompt\("请输入邀请码/);
 });
 
 test("Chat2 uses its own Supabase project and full cloud sessions", () => {
-  assert.match(index, /https:\/\/jxkzhiwjfqwemnljytvt\.supabase\.co/);
-  assert.match(index, /syncSessionToCloud/);
+  assert.match(app, /https:\/\/jxkzhiwjfqwemnljytvt\.supabase\.co/);
+  assert.match(app, /syncSessionToCloud/);
   assert.match(server, /app\.get\("\/api\/chat\/sessions"/);
   assert.match(server, /app\.put\("\/api\/chat\/sessions\/:id"/);
   assert.match(server, /app\.delete\("\/api\/chat\/sessions\/:id"/);
 });
 
 test("registration validates confirmation and login failure clears stale tokens", () => {
-  assert.match(index, /authConfirmPassword/);
-  assert.match(index, /两次输入的密码不一致/);
-  assert.match(index, /密码至少 8 位/);
-  assert.match(index, /catch\(err\)[\s\S]*setAccessToken\(""\)/);
-  assert.doesNotMatch(index, /alert\("已退出登录"\)/);
+  assert.match(app, /authConfirmPassword/);
+  assert.match(app, /两次输入的密码不一致/);
+  assert.match(app, /密码至少 8 位/);
+  assert.match(app, /catch\(err\)[\s\S]*setAccessToken\(""\)/);
+  assert.doesNotMatch(app, /alert\("已退出登录"\)/);
 });
